@@ -1,26 +1,13 @@
 import { unzipSync, type Unzipped } from 'fflate';
-import type { PDFDocumentProxy } from 'pdfjs-dist';
-// Vite 将查询导入打包成本地 worker；ESLint 的 Node 解析器不识别该查询后缀。
-// eslint-disable-next-line import/no-unresolved
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-export type ImportedDocumentSource = {
-  source: string;
-  markdown: boolean;
+type ImportedDocumentBase = {
   title?: string;
   author?: string;
   cover?: string;
-  pdf?: {
-    file: Blob;
-    fingerprint: string;
-    pageCount: number;
-    pageNumbers: number[];
-    outline: Array<{
-      title: string;
-      level: 1 | 2 | 3;
-      pageNumber: number;
-    }>;
-  };
+};
+
+export type ImportedDocumentSource = ImportedDocumentBase & {
+  source: string;
 };
 
 export type ReadDocumentOptions = {
@@ -29,13 +16,11 @@ export type ReadDocumentOptions = {
 
 const COVER_MAX_WIDTH = 720;
 const COVER_MAX_HEIGHT = 1_024;
-const supportedExtensions = new Set(['txt', 'md', 'markdown', 'pdf', 'epub']);
-const cjkBoundaryPattern = /[\u2e80-\u9fff\uf900-\ufaff]/u;
 
 const extensionOf = (name: string) => name.split('.').pop()?.toLowerCase() ?? '';
 
 const fileTitleOf = (name: string) => name
-  .replace(/\.(?:txt|md|markdown|pdf|epub)$/i, '')
+  .replace(/\.epub$/i, '')
   .trim();
 
 const cleanMetadata = (value: unknown) => (
@@ -134,26 +119,6 @@ const decodeMarkup = (bytes: Uint8Array) => {
     return decodeText(bytes, encoding);
   }
   return decodeText(bytes);
-};
-
-const joinTextLines = (left: string, right: string) => {
-  if (!left) {
-    return right;
-  }
-  if (!right) {
-    return left;
-  }
-
-  const leftCharacter = left.at(-1) ?? '';
-  const rightCharacter = right[0] ?? '';
-  const separator = cjkBoundaryPattern.test(leftCharacter)
-    || cjkBoundaryPattern.test(rightCharacter)
-    || /\s/.test(leftCharacter)
-    || /^[,.;:!?，。；：！？、）》】]/u.test(rightCharacter)
-    ? ''
-    : ' ';
-
-  return `${left}${separator}${right}`;
 };
 
 const parseXml = (source: string, description: string) => {
@@ -437,7 +402,11 @@ const markdownInlineText = (node: Node): string => {
     return markdownCodeSpan(node.textContent ?? '');
   }
 
-  const value = Array.from(node.childNodes).map(markdownInlineText).join('');
+  const value = Array.from(node.childNodes)
+    .map(markdownInlineText)
+    .join('')
+    .replace(/\*{4}/g, '')
+    .replace(/~{4}/g, '');
 
   if (tag === 'strong' || tag === 'b') {
     return wrapMarkdownInline(value, '**');
@@ -651,6 +620,25 @@ const htmlToMarkdown = (source: string) => {
   return blocks.join('\n\n');
 };
 
+const withEpubNavigationHeading = (markdown: string, title: string) => {
+  if (/^#{1,6}\s/m.test(markdown)) {
+    return markdown;
+  }
+
+  const blocks = markdown.split(/\n{2,}/);
+  const comparable = (value: string) => cleanMetadata(value)
+    .replace(/[*_~`\\]+/g, '')
+    .normalize('NFKC')
+    .toLowerCase();
+  const heading = `## ${escapeMarkdownText(title)}`;
+
+  if (comparable(blocks[0] ?? '') === comparable(title)) {
+    blocks[0] = heading;
+    return blocks.join('\n\n');
+  }
+  return `${heading}\n\n${markdown}`;
+};
+
 type EpubManifestItem = {
   id: string;
   path: string;
@@ -780,7 +768,7 @@ const readEpubCover = async (
   return imageBytesToCover(imageBytes, image.mediaType).catch((): undefined => undefined);
 };
 
-const contentsLabelPattern = /^(?:目录|目次|目录页|contents|table\s+of\s+contents)$/iu;
+const contentsLabelPattern = /^(?:目\s*录(?:页)?|目\s*次|contents|table\s+of\s+contents)$/iu;
 
 const looksLikeEpubContentsDocument = (source: string, item: EpubManifestItem) => {
   let document = new DOMParser().parseFromString(source, 'application/xhtml+xml');
@@ -804,7 +792,13 @@ const looksLikeEpubContentsDocument = (source: string, item: EpubManifestItem) =
     ...['h1', 'h2', 'h3'].flatMap((tag) => (
       localNameElements(body, tag).slice(0, 2).map((heading) => heading.textContent)
     )),
+    ...['p', 'li'].flatMap((tag) => (
+      localNameElements(body, tag).slice(0, 4).map((block) => block.textContent)
+    )),
   ].map(cleanMetadata).filter(Boolean);
+  const textBlocks = ['h1', 'h2', 'h3', 'p', 'li'].flatMap((tag) => (
+    localNameElements(body, tag).map((block) => cleanMetadata(block.textContent))
+  )).filter(Boolean);
   const labelledAsContents = labels.some((label) => contentsLabelPattern.test(label));
   const pathSuggestsContents = /(?:^|[/_.-])(?:toc|contents|nav)(?:[/_.-]|$)/i
     .test(`${item.id}/${item.path}`);
@@ -815,12 +809,28 @@ const looksLikeEpubContentsDocument = (source: string, item: EpubManifestItem) =
   );
 
   return semanticToc
-    || (labelledAsContents && anchors.length >= 2)
+    || (labelledAsContents && (anchors.length >= 2 || textBlocks.length >= 6))
     || (
       pathSuggestsContents
       && anchors.length >= 4
       && linkedLength >= Math.max(24, bodyLength * 0.34)
     );
+};
+
+const looksLikeEpubAdvertisementDocument = (
+  source: string,
+  item: EpubManifestItem,
+) => {
+  if (!/(?:^|[/_.-])ad[_-]?chapter\d*(?:[/_.-]|$)/iu.test(`${item.id}/${item.path}`)) {
+    return false;
+  }
+
+  const document = new DOMParser().parseFromString(source, 'text/html');
+  const body = localNameElements(document, 'body')[0] ?? document.documentElement;
+
+  return /(?:公众号|电子书搜索下载|https?:\/\/|www\.)/iu.test(
+    cleanMetadata(body.textContent),
+  );
 };
 
 const resolveManifestItem = (
@@ -1101,6 +1111,7 @@ const readEpub = async (
     if (
       navigationIds.has(item.id)
       || looksLikeEpubContentsDocument(chapterSource, item)
+      || looksLikeEpubAdvertisementDocument(chapterSource, item)
     ) {
       onProgress?.(0.2 + (index + 1) / spine.length * 0.75);
       continue;
@@ -1113,10 +1124,8 @@ const readEpub = async (
     }
 
     const navigationTitle = navigationTitles.get(item.path);
-    if (navigationTitle && !/^#{1,6}\s/m.test(markdown)) {
-      sections.push(
-        `## ${escapeMarkdownText(navigationTitle)}\n\n${markdown}`,
-      );
+    if (navigationTitle) {
+      sections.push(withEpubNavigationHeading(markdown, navigationTitle));
     } else {
       sections.push(markdown);
     }
@@ -1131,491 +1140,10 @@ const readEpub = async (
   onProgress?.(1);
   return {
     source,
-    markdown: true,
     title,
     author: author || undefined,
     ...(cover ? { cover } : {}),
   };
-};
-
-type PdfLine = {
-  text: string;
-  x: number;
-  y: number;
-  height: number;
-  right: number;
-};
-
-type PdfTextItem = {
-  str: string;
-  transform: unknown[];
-  width: number;
-  height: number;
-  hasEOL: boolean;
-};
-
-const needsPdfSpace = (left: string, right: string, gap: number, height: number) => (
-  gap > Math.max(1.2, height * 0.12)
-  && !cjkBoundaryPattern.test(left.at(-1) ?? '')
-  && !cjkBoundaryPattern.test(right[0] ?? '')
-  && !/\s$/.test(left)
-  && !/^[,.;:!?，。；：！？、）》】]/u.test(right)
-);
-
-const comparablePdfText = (value: string) => cleanMetadata(value)
-  .normalize('NFKC')
-  .replace(/[\s:：·•.。_-]+/gu, '')
-  .toLowerCase();
-
-const pdfHeadingPattern = new RegExp(
-  String.raw`^(?:第[\p{Script=Han}〇零一二三四五六七八九十百千万\d]+[章节回部卷篇]`
-    + String.raw`|(?:chapter|part)\s+\d+\b`
-    + String.raw`|\d+(?:\.\d+){1,4}\s*\S)`,
-  'iu',
-);
-const pdfOrderedListPattern = /^(\d{1,6})[.)、]\s*(.+)$/u;
-const pdfBulletListPattern = /^(?:[-+*]\s+|•\s*)(.+)$/u;
-const pdfTerminalPattern = /[。！？!?；;…][”’"'）》】〕」』]*$/u;
-
-type PdfPageText = {
-  markdown: string;
-  lines: string[];
-};
-
-const pdfPageText = async (
-  document: PDFDocumentProxy,
-  pageNumber: number,
-  outlineTitles: readonly string[],
-): Promise<PdfPageText> => {
-  const page = await document.getPage(pageNumber);
-
-  try {
-    const content = await page.getTextContent();
-    const lines: PdfLine[] = [];
-    let current: PdfLine | undefined;
-
-    content.items.forEach((item) => {
-      if (!('str' in item)) {
-        return;
-      }
-
-      const textItem = item as PdfTextItem;
-      const text = textItem.str.replace(/\s+/g, ' ').trim();
-      if (!text) {
-        if (textItem.hasEOL) {
-          current = undefined;
-        }
-        return;
-      }
-
-      const x = Number(textItem.transform[4]) || 0;
-      const y = Number(textItem.transform[5]) || 0;
-      const height = Math.max(
-        1,
-        Math.abs(textItem.height) || Math.abs(Number(textItem.transform[3])) || 1,
-      );
-      const startsNewLine = !current
-        || Math.abs(y - current.y) > Math.max(height, current.height) * 0.55
-        || x < current.right - Math.max(height, current.height);
-
-      if (startsNewLine) {
-        current = { text, x, y, height, right: x + Math.abs(textItem.width) };
-        lines.push(current);
-      } else {
-        current.text += needsPdfSpace(current.text, text, x - current.right, height)
-          ? ` ${text}`
-          : text;
-        current.right = Math.max(current.right, x + Math.abs(textItem.width));
-        current.height = Math.max(current.height, height);
-      }
-
-      if (textItem.hasEOL) {
-        current = undefined;
-      }
-    });
-
-    if (!lines.length) {
-      return { markdown: '', lines: [] };
-    }
-
-    const originalLines = lines.map((line) => line.text);
-    const heights = lines.map((line) => line.height).sort(
-      (left, right) => left - right,
-    );
-    const medianHeight = heights[Math.floor(heights.length / 2)] ?? 1;
-    const knownHeadings = new Set(outlineTitles.map(comparablePdfText));
-    const contentLines = lines.filter((line, index) => {
-      const atPageEdge = index < 2 || index >= lines.length - 2;
-
-      return !(atPageEdge && /^(?:\d{1,5}|[ivxlcdm]{1,10})$/i.test(line.text));
-    });
-    const leftEdge = Math.min(...contentLines.map((line) => line.x));
-    const blocks: string[] = [];
-    let paragraph = '';
-
-    const flushParagraph = () => {
-      if (paragraph) {
-        blocks.push(escapeMarkdownText(paragraph));
-        paragraph = '';
-      }
-    };
-
-    contentLines.forEach((line, index) => {
-      const previous = contentLines[index - 1];
-      const verticalGap = previous ? Math.abs(previous.y - line.y) : 0;
-      const comparable = comparablePdfText(line.text);
-      if (knownHeadings.has(comparable)) {
-        flushParagraph();
-        return;
-      }
-
-      const heading = line.text.length <= 96
-        && pdfHeadingPattern.test(line.text)
-        && line.height >= medianHeight * 1.04;
-      if (heading) {
-        flushParagraph();
-        const headingLevel = Math.min(
-          4,
-          Math.max(2, (line.text.match(/\./g)?.length ?? 0) + 1),
-        );
-
-        blocks.push(`${'#'.repeat(headingLevel)} ${escapeMarkdownText(line.text)}`);
-        return;
-      }
-
-      const orderedList = line.text.match(pdfOrderedListPattern);
-      const bulletList = line.text.match(pdfBulletListPattern);
-      if (orderedList || bulletList) {
-        flushParagraph();
-        blocks.push(orderedList
-          ? `${Number(orderedList[1])}. ${escapeMarkdownText(orderedList[2])}`
-          : `- ${escapeMarkdownText(bulletList?.[1] ?? '')}`);
-        return;
-      }
-
-      const startsIndentedParagraph = Boolean(
-        previous
-        && line.x > leftEdge + medianHeight * 0.72
-        && pdfTerminalPattern.test(previous.text)
-      );
-      const startsBlock = Boolean(
-        previous
-        && (
-          verticalGap > Math.max(previous.height, line.height, medianHeight) * 2.25
-          || startsIndentedParagraph
-        )
-      );
-
-      if (startsBlock && paragraph) {
-        flushParagraph();
-      }
-      paragraph = joinTextLines(paragraph, line.text);
-    });
-    flushParagraph();
-    return { markdown: blocks.join('\n\n'), lines: originalLines };
-  } finally {
-    page.cleanup();
-  }
-};
-
-const looksLikePdfContentsPage = (
-  lines: readonly string[],
-  continuation = false,
-) => {
-  const cleaned = lines.map((line) => cleanMetadata(line).normalize('NFKC')).filter(Boolean);
-  const labelled = cleaned.slice(0, 8).some((line) => contentsLabelPattern.test(line));
-  const entries = cleaned.filter((line) => (
-    /(?:\.{2,}|…{2,}|·{2,}|\s)\s*\d{1,4}$/u.test(line)
-    || /^(?:第.+[章节回部卷篇]|\d+(?:\.\d+)+|chapter\s+\d+).+\s\d{1,4}$/iu.test(line)
-    || /^\d+(?:\.\d+){1,4}\s*\S+/u.test(line)
-    || /^\d{1,4}[.)、]?\s+(?:第.+[章节回部卷篇]|\d+(?:\.\d+){1,4}\s*\S+)/iu.test(line)
-  )).length;
-
-  return labelled
-    ? entries >= 2 || cleaned.length >= 6
-    : entries >= 6 || (continuation && entries >= 5);
-};
-
-const looksLikePdfCoverPage = (
-  lines: readonly string[],
-  title: string,
-) => {
-  const cleaned = lines.map(cleanMetadata).filter(Boolean);
-  const titleKey = comparablePdfText(title);
-  const totalLength = cleaned.reduce((length, line) => length + line.length, 0);
-
-  return cleaned.length <= 8
-    && totalLength <= 220
-    && cleaned.some((line) => comparablePdfText(line).includes(titleKey));
-};
-
-const renderPdfCover = async (pdfDocument: PDFDocumentProxy) => {
-  const page = await pdfDocument.getPage(1);
-
-  try {
-    const naturalViewport = page.getViewport({ scale: 1 });
-    const scale = Math.min(
-      COVER_MAX_WIDTH / Math.max(naturalViewport.width, 1),
-      COVER_MAX_HEIGHT / Math.max(naturalViewport.height, 1),
-    );
-    const viewport = page.getViewport({ scale });
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d', { alpha: false });
-
-    canvas.width = Math.max(1, Math.round(viewport.width));
-    canvas.height = Math.max(1, Math.round(viewport.height));
-    if (!context) {
-      return undefined;
-    }
-    context.fillStyle = '#fff';
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    await page.render({ canvas, canvasContext: context, viewport }).promise;
-    return canvasCoverDataUrl(canvas);
-  } finally {
-    page.cleanup();
-  }
-};
-
-type PdfOutlineNode = {
-  title: string;
-  dest: string | unknown[] | null;
-  items: PdfOutlineNode[];
-};
-
-const pdfOutline = async (document: PDFDocumentProxy) => {
-  const headings = new Map<
-    number,
-    Array<{ title: string; level: 1 | 2 | 3 }>
-  >();
-  const outline = await document.getOutline()
-    .catch((): null => null) as PdfOutlineNode[] | null;
-  let count = 0;
-
-  const visit = async (nodes: PdfOutlineNode[], level: number): Promise<void> => {
-    for (const node of nodes) {
-      if (count >= 500) {
-        return;
-      }
-      count += 1;
-
-      const destination = typeof node.dest === 'string'
-        ? await document.getDestination(node.dest).catch((): null => null)
-        : node.dest;
-      const reference = destination?.[0];
-      let pageIndex: number | undefined;
-
-      if (typeof reference === 'number') {
-        pageIndex = reference;
-      } else if (
-        reference
-        && typeof reference === 'object'
-        && 'num' in reference
-        && 'gen' in reference
-      ) {
-        pageIndex = await document.getPageIndex(
-          reference as { num: number; gen: number },
-        ).catch((): undefined => undefined);
-      }
-
-      const title = cleanMetadata(node.title);
-      if (pageIndex !== undefined && title) {
-        const pageHeadings = headings.get(pageIndex) ?? [];
-
-        pageHeadings.push({
-          title,
-          level: Math.min(3, Math.max(1, level)) as 1 | 2 | 3,
-        });
-        headings.set(pageIndex, pageHeadings);
-      }
-      if (node.items?.length) {
-        await visit(node.items, level + 1);
-      }
-    }
-  };
-
-  if (outline) {
-    await visit(outline, 1);
-  }
-  return headings;
-};
-
-const pdfOutlineContentsPages = (
-  headings: ReadonlyMap<number, Array<{ title: string }>>,
-) => {
-  const outlinedPages = [...headings.entries()].sort(
-    ([leftPage], [rightPage]) => leftPage - rightPage,
-  );
-  const contentsIndex = outlinedPages.findIndex(([, pageHeadings]) => (
-    pageHeadings.some((heading) => contentsLabelPattern.test(heading.title))
-  ));
-
-  if (contentsIndex < 0) {
-    return new Set<number>();
-  }
-  const startPageNumber = outlinedPages[contentsIndex][0] + 1;
-  const nextContentPage = outlinedPages.slice(contentsIndex + 1).find(
-    ([, pageHeadings]) => pageHeadings.some(
-      (heading) => !contentsLabelPattern.test(heading.title),
-    ),
-  );
-  const endPageNumber = nextContentPage?.[0] !== undefined
-    ? nextContentPage[0] + 1
-    : startPageNumber + 1;
-
-  return new Set(Array.from(
-    { length: Math.max(0, endPageNumber - startPageNumber) },
-    (_, index) => startPageNumber + index,
-  ));
-};
-
-const readPdf = async (
-  file: File,
-  onProgress?: (progress: number) => void,
-): Promise<ImportedDocumentSource> => {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  if (new TextDecoder('windows-1252').decode(bytes.subarray(0, 5)) !== '%PDF-') {
-    throw new Error('文件不是有效的 PDF');
-  }
-
-  const { GlobalWorkerOptions, getDocument } = await import('pdfjs-dist');
-
-  GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-  const loadingTask = getDocument({
-    data: bytes,
-    useWasm: false,
-  });
-  let document: PDFDocumentProxy | undefined;
-
-  try {
-    document = await loadingTask.promise;
-    onProgress?.(0.08);
-    const metadata = await document.getMetadata().catch((): null => null);
-    const info = metadata?.info as Record<string, unknown> | undefined;
-    const xmpTitle = metadata?.metadata?.get('dc:title');
-    const xmpAuthor = metadata?.metadata?.get('dc:creator');
-    const title = cleanMetadata(info?.Title)
-      || cleanMetadata(xmpTitle)
-      || fileTitleOf(file.name);
-    const author = cleanMetadata(info?.Author) || cleanMetadata(xmpAuthor);
-    const [headings, cover] = await Promise.all([
-      pdfOutline(document),
-      renderPdfCover(document).catch((): undefined => undefined),
-    ]);
-    const sections: string[] = [`# ${escapeMarkdownText(title)}`];
-    let skippingContents = false;
-    let meaningfulTextPages = 0;
-    const skippedPageNumbers = new Set<number>();
-    const outlineContentsPages = pdfOutlineContentsPages(headings);
-    const contentsPageLimit = Math.min(
-      120,
-      Math.max(8, Math.ceil(document.numPages * 0.12)),
-    );
-
-    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
-      const pageHeadings = headings.get(pageNumber - 1) ?? [];
-      const pageText = await pdfPageText(
-        document,
-        pageNumber,
-        pageHeadings.map((heading) => heading.title),
-      );
-      const coverPage = pageNumber === 1
-        && looksLikePdfCoverPage(pageText.lines, title);
-      const contentsPage: boolean = pageNumber <= contentsPageLimit
-        && (
-          outlineContentsPages.has(pageNumber)
-          || looksLikePdfContentsPage(pageText.lines, skippingContents)
-        );
-      const pageTextLength = cleanMetadata(pageText.lines.join('')).length;
-
-      if (pageTextLength >= 80) {
-        meaningfulTextPages += 1;
-      }
-
-      if (coverPage || contentsPage) {
-        skippedPageNumbers.add(pageNumber);
-        skippingContents = contentsPage;
-        onProgress?.(0.1 + pageNumber / document.numPages * 0.88);
-        continue;
-      }
-      skippingContents = false;
-      const section = [
-        ...pageHeadings.map((heading) => (
-          `${'#'.repeat(heading.level)} ${escapeMarkdownText(heading.title)}`
-        )),
-        pageText.markdown,
-      ].filter(Boolean).join('\n\n');
-
-      if (section) {
-        sections.push(section);
-      }
-      onProgress?.(0.1 + pageNumber / document.numPages * 0.88);
-    }
-
-    const minimumTextPages = Math.max(1, Math.ceil(document.numPages * 0.25));
-    if (meaningfulTextPages < minimumTextPages) {
-      const allPageNumbers = Array.from(
-        { length: document.numPages },
-        (_, index) => index + 1,
-      );
-      const readablePageNumbers = allPageNumbers.filter(
-        (pageNumber) => !skippedPageNumbers.has(pageNumber),
-      );
-      const pageNumbers = readablePageNumbers.length
-        ? readablePageNumbers
-        : allPageNumbers;
-      const fingerprint = document.fingerprints.find(
-        (value): value is string => typeof value === 'string' && Boolean(value),
-      ) ?? `${file.name}:${file.size}:${file.lastModified}`;
-      const outline = [...headings.entries()].flatMap(([pageIndex, pageHeadings]) => (
-        pageHeadings.map((heading) => ({
-          ...heading,
-          pageNumber: pageIndex + 1,
-        }))
-      ));
-
-      onProgress?.(1);
-      return {
-        source: pageNumbers.map((pageNumber) => `第 ${pageNumber} 页`).join('\n\n'),
-        markdown: false,
-        title,
-        author: author || undefined,
-        ...(cover ? { cover } : {}),
-        pdf: {
-          file: file.slice(0, file.size, 'application/pdf'),
-          fingerprint,
-          pageCount: document.numPages,
-          pageNumbers,
-          outline,
-        },
-      };
-    }
-
-    if (!sections.slice(1).some((section) => /\S/.test(section.replace(/^#{1,6} .*$/gm, '')))) {
-      throw new Error('PDF 中没有可提取的文字，扫描版 PDF 暂不支持 OCR');
-    }
-
-    onProgress?.(1);
-    return {
-      source: sections.join('\n\n'),
-      markdown: true,
-      title,
-      author: author || undefined,
-      ...(cover ? { cover } : {}),
-    };
-  } catch (error) {
-    if (error instanceof Error && (
-      error.message.startsWith('PDF')
-      || error.message.includes('扫描版')
-    )) {
-      throw error;
-    }
-    if (error instanceof Error && /password/i.test(`${error.name} ${error.message}`)) {
-      throw new Error('暂不支持需要密码的 PDF');
-    }
-    throw new Error('PDF 已损坏或使用了暂不支持的格式');
-  } finally {
-    await loadingTask.destroy().catch((): void => undefined);
-  }
 };
 
 export const readDocumentFile = async (
@@ -1624,22 +1152,9 @@ export const readDocumentFile = async (
 ): Promise<ImportedDocumentSource> => {
   const extension = extensionOf(file.name);
 
-  if (!supportedExtensions.has(extension)) {
-    throw new Error('目前支持 TXT、Markdown、PDF 和 EPUB');
+  if (extension !== 'epub') {
+    throw new Error('目前仅支持 EPUB');
   }
   options.onProgress?.(0);
-
-  if (extension === 'pdf') {
-    return readPdf(file, options.onProgress);
-  }
-  if (extension === 'epub') {
-    return readEpub(file, options.onProgress);
-  }
-
-  const source = decodeText(new Uint8Array(await file.arrayBuffer()));
-  options.onProgress?.(1);
-  return {
-    source,
-    markdown: extension !== 'txt',
-  };
+  return readEpub(file, options.onProgress);
 };

@@ -28,16 +28,8 @@
 
 import hljs from 'highlight.js/lib/common';
 import katex from 'katex';
-import type {
-  PDFDocumentLoadingTask,
-  PDFDocumentProxy,
-  PDFPageProxy,
-} from 'pdfjs-dist';
 import 'katex/dist/katex.min.css';
 import './index.css';
-// Vite 将查询导入打包成本地 worker；ESLint 的 Node 解析器不识别该查询后缀。
-// eslint-disable-next-line import/no-unresolved
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import pageTurnBackwardOne from './assets/audio/page-turn-backward-01.ogg';
 import pageTurnBackwardTwo from './assets/audio/page-turn-backward-02.ogg';
 import pageTurnForwardOne from './assets/audio/page-turn-forward-01.ogg';
@@ -73,7 +65,6 @@ import {
   type ImportedBookFormat,
   type ImportedInlineRun,
   type ImportedBookMetadata,
-  type ImportedPdfDocument,
   type ImportedBookRecord,
   type ImportedSourceFormat,
 } from './library-store';
@@ -128,7 +119,6 @@ type Book = {
   paragraphs?: string[];
   chapters?: ImportedBookChapter[];
   formats?: ImportedBookFormat[];
-  pdf?: ImportedPdfDocument;
   sourceName?: string;
   sourceFormat?: ImportedSourceFormat;
   material?: BookMaterial;
@@ -405,10 +395,6 @@ const emptyPage = (offset = 0): ReadingPage => ({
 });
 
 let readingDocument = emptyPage();
-let activePdfDocument: PDFDocumentProxy | undefined;
-let activePdfLoadingTask: PDFDocumentLoadingTask | undefined;
-let pdfPageObserver: IntersectionObserver | undefined;
-let pdfRenderRevision = 0;
 
 const app = document.querySelector<HTMLDivElement>('#app');
 
@@ -715,7 +701,7 @@ app.innerHTML = `
         class="visually-hidden"
         data-import-input
         type="file"
-        accept=".txt,.md,.markdown,.pdf,.epub,text/plain,text/markdown,application/pdf,application/epub+zip"
+        accept=".epub,application/epub+zip"
         multiple
         tabindex="-1"
         aria-hidden="true"
@@ -723,7 +709,7 @@ app.innerHTML = `
 
       <div class="library-drop-hint" data-library-drop-hint aria-hidden="true">
         <span>把书放入书库</span>
-        <small>支持 Markdown、TXT、PDF 与 EPUB</small>
+        <small>仅支持 EPUB</small>
       </div>
 
       <nav class="landing-dock library-dock config-dock" aria-label="书架工具">
@@ -790,7 +776,7 @@ app.innerHTML = `
             ${renderReaderIcon('libraryImport')}
             <span>
               <strong>导入书籍</strong>
-              <small>Markdown · TXT · PDF · EPUB</small>
+              <small>EPUB</small>
             </span>
           </button>
           <div class="library-import-feedback" data-import-feedback hidden>
@@ -1633,149 +1619,6 @@ const createPageElement = (page: SourcePage) => {
   return pageInner;
 };
 
-const disposePdfReadingDocument = async () => {
-  pdfRenderRevision += 1;
-  pdfPageObserver?.disconnect();
-  pdfPageObserver = undefined;
-  activePdfDocument = undefined;
-  const loadingTask = activePdfLoadingTask;
-
-  activePdfLoadingTask = undefined;
-  await loadingTask?.destroy().catch((): void => undefined);
-};
-
-const renderPdfPage = async (
-  sheet: HTMLElement,
-  pageNumber: number,
-  revision: number,
-) => {
-  if (
-    revision !== pdfRenderRevision
-    || !activePdfDocument
-    || sheet.dataset.renderState === 'loading'
-    || sheet.dataset.renderState === 'ready'
-  ) {
-    return;
-  }
-
-  sheet.dataset.renderState = 'loading';
-  const pdfDocument = activePdfDocument;
-  let page: PDFPageProxy | undefined;
-
-  try {
-    page = await pdfDocument.getPage(pageNumber);
-    if (revision !== pdfRenderRevision || !sheet.isConnected) {
-      return;
-    }
-
-    const naturalViewport = page.getViewport({ scale: 1 });
-    const cssWidth = Math.max(sheet.clientWidth, 1);
-    const outputScale = Math.min(window.devicePixelRatio || 1, 2);
-    const viewport = page.getViewport({
-      scale: cssWidth / Math.max(naturalViewport.width, 1) * outputScale,
-    });
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d', { alpha: false });
-
-    if (!context) {
-      throw new Error('无法创建 PDF 页面画布');
-    }
-    canvas.width = Math.max(1, Math.round(viewport.width));
-    canvas.height = Math.max(1, Math.round(viewport.height));
-    canvas.setAttribute('aria-label', `PDF 第 ${pageNumber} 页`);
-    sheet.style.aspectRatio = `${naturalViewport.width} / ${naturalViewport.height}`;
-    await page.render({ canvas, canvasContext: context, viewport }).promise;
-    if (revision !== pdfRenderRevision || !sheet.isConnected) {
-      return;
-    }
-    sheet.replaceChildren(canvas);
-    sheet.dataset.renderState = 'ready';
-  } catch {
-    if (revision === pdfRenderRevision && sheet.isConnected) {
-      sheet.dataset.renderState = 'failed';
-      sheet.textContent = `第 ${pageNumber} 页暂时无法显示`;
-    }
-  } finally {
-    page?.cleanup();
-  }
-};
-
-const renderPdfReadingDocument = async (pdf: ImportedPdfDocument) => {
-  const { GlobalWorkerOptions, getDocument } = await import('pdfjs-dist');
-  const revision = pdfRenderRevision;
-  const data = new Uint8Array(await pdf.file.arrayBuffer());
-
-  if (revision !== pdfRenderRevision) {
-    return;
-  }
-
-  GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-  const loadingTask = getDocument({
-    data,
-    useWasm: false,
-  });
-
-  activePdfLoadingTask = loadingTask;
-  const pdfDocument = await loadingTask.promise;
-
-  if (
-    revision !== pdfRenderRevision
-    || loadingTask !== activePdfLoadingTask
-  ) {
-    await loadingTask.destroy().catch((): void => undefined);
-    return;
-  }
-  activePdfDocument = pdfDocument;
-  const firstPage = await pdfDocument.getPage(pdf.pageNumbers[0]);
-  const firstViewport = firstPage.getViewport({ scale: 1 });
-
-  firstPage.cleanup();
-  const pageInner = document.createElement('div');
-  const pageStack = document.createElement('div');
-  const segments = readingDocument.segments ?? [];
-
-  pageInner.className = 'page-inner';
-  pageInner.dataset.sourceFormat = 'pdf';
-  pageInner.dataset.pdfLayout = 'facsimile';
-  pageStack.className = 'page-body pdf-page-stack';
-  const sheets = pdf.pageNumbers.map((pageNumber, index) => {
-    const sheet = document.createElement('section');
-    const label = document.createElement('span');
-
-    sheet.className = 'pdf-page-sheet';
-    sheet.dataset.pageNumber = String(pageNumber);
-    sheet.dataset.textOffset = String(segments[index]?.startOffset ?? index);
-    sheet.style.aspectRatio = `${firstViewport.width} / ${firstViewport.height}`;
-    sheet.setAttribute('aria-label', `第 ${pageNumber} 页`);
-    label.className = 'pdf-page-loading';
-    label.textContent = `第 ${pageNumber} 页`;
-    sheet.append(label);
-    pageStack.append(sheet);
-    return sheet;
-  });
-
-  pageInner.append(pageStack);
-  readingDocumentElement.replaceChildren(pageInner);
-  pdfPageObserver = new IntersectionObserver((entries) => {
-    entries.forEach((entry) => {
-      if (!entry.isIntersecting) {
-        return;
-      }
-      const sheet = entry.target as HTMLElement;
-      const pageNumber = Number(sheet.dataset.pageNumber);
-
-      if (Number.isInteger(pageNumber)) {
-        void renderPdfPage(sheet, pageNumber, revision);
-      }
-    });
-  }, {
-    root: readerSurface,
-    rootMargin: '1200px 0px',
-  });
-  sheets.forEach((sheet) => pdfPageObserver?.observe(sheet));
-  void renderPdfPage(sheets[0], pdf.pageNumbers[0], revision);
-};
-
 const renderReadingDocument = () => {
   readingLayoutPoints = [];
   readingDocumentElement.replaceChildren(createPageElement(readingDocument));
@@ -2334,18 +2177,6 @@ const setReaderPanel = (
   });
 };
 
-const jumpToAnchor = (anchor: number) => {
-  if (readingDocumentPreparing) {
-    return;
-  }
-
-  scrollToAnchor(anchor);
-  readingProgress[activeBook.id] = anchor;
-  localStorage.setItem(PROGRESS_KEY, JSON.stringify(readingProgress));
-  setReaderPanel(null);
-  setReaderControls(true);
-};
-
 const toggleBookmark = () => {
   const range = getScrollRange();
   const ratio = range > 0 ? readerSurface.scrollTop / range : 0;
@@ -2400,17 +2231,12 @@ const prepareReadingDocument = async (
   readerStatus.textContent = '正在载入正文';
 
   try {
-    await disposePdfReadingDocument();
     await document.fonts.ready;
     readingDocument = createReadingPage(
       book,
       createTextSegments(getBookParagraphs(book)),
     );
-    if (book.pdf) {
-      await renderPdfReadingDocument(book.pdf);
-    } else {
-      renderReadingDocument();
-    }
+    renderReadingDocument();
     await afterPaint();
     refreshReadingLayout();
     renderReaderMinimapBars();
@@ -2960,7 +2786,6 @@ const createBookReturnFlight = (
 const closeBook = async () => {
   if (mode === 'opening') {
     readingDocumentPreparing = false;
-    void disposePdfReadingDocument();
     activeAnimations.forEach((animation) => animation.cancel());
     activeAnimations = [];
     bookCopy.removeAttribute('aria-busy');
@@ -3093,7 +2918,6 @@ const closeBook = async () => {
     animation.finished.catch((): void => undefined)));
   activeAnimations = [];
   setMode('library');
-  void disposePdfReadingDocument();
   animations.forEach((animation) => animation.cancel());
   transitionBook.classList.remove('is-visible');
   readerStatus.textContent = '';
@@ -3111,7 +2935,7 @@ const toBookMetadata = (book: ImportedBookRecord): ImportedBookMetadata => ({
   ...(book.cover ? { cover: book.cover } : {}),
   chapterTitle: book.chapterTitle,
   ...(book.sourceName ? { sourceName: book.sourceName } : {}),
-  ...(book.sourceFormat ? { sourceFormat: book.sourceFormat } : {}),
+  sourceFormat: book.sourceFormat,
   imported: true,
   createdAt: book.createdAt,
 });
@@ -3663,15 +3487,6 @@ const likelySameImportedContent = (
   existing: Book,
   incoming: ImportedBookRecord,
 ) => {
-  if (existing.pdf || incoming.pdf) {
-    return Boolean(
-      existing.pdf
-      && incoming.pdf
-      && existing.pdf.pageCount === incoming.pdf.pageCount
-      && existing.cover
-      && existing.cover === incoming.cover,
-    );
-  }
   const left = comparableImportedText(existing.paragraphs ?? []);
   const right = comparableImportedText(incoming.paragraphs);
   const [shorter, longer] = left.length <= right.length ? [left, right] : [right, left];
@@ -3690,14 +3505,20 @@ const likelySameImportedContent = (
 };
 
 const matchImportedBook = async (record: ImportedBookRecord): Promise<ImportedBookMatch> => {
-  const candidates = importedBooks.filter((book) => (
+  const identityCandidates = importedBooks.filter((book) => (
     book.title === record.title
     && book.author === record.author
     && (!book.sourceFormat || book.sourceFormat === record.sourceFormat)
   ));
   const sourceCandidates = record.sourceName
-    ? candidates.filter((book) => book.sourceName === record.sourceName)
+    ? importedBooks.filter((book) => (
+        book.sourceName === record.sourceName
+        && (!book.sourceFormat || book.sourceFormat === record.sourceFormat)
+      ))
     : [];
+  const candidates = [...new Map(
+    [...sourceCandidates, ...identityCandidates].map((book) => [book.id, book]),
+  ).values()];
   const replacements: ImportedBookMetadata[] = [];
 
   for (const candidate of candidates) {
@@ -3712,7 +3533,6 @@ const matchImportedBook = async (record: ImportedBookRecord): Promise<ImportedBo
         ))
         && JSON.stringify(existing.chapters ?? []) === JSON.stringify(record.chapters)
         && JSON.stringify(existing.formats ?? []) === JSON.stringify(record.formats)
-        && existing.pdf?.fingerprint === record.pdf?.fingerprint
         && existing.cover === record.cover
         && existing.sourceFormat === record.sourceFormat
       ) {

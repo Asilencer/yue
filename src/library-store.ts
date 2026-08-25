@@ -79,13 +79,6 @@ export type ImportedBookFormat =
       paragraphIndex: number;
     };
 
-export type ImportedPdfDocument = {
-  file: Blob;
-  fingerprint: string;
-  pageCount: number;
-  pageNumbers: number[];
-};
-
 export type ImportedBookRecord = {
   id: string;
   title: string;
@@ -96,54 +89,34 @@ export type ImportedBookRecord = {
   paragraphs: string[];
   chapters: ImportedBookChapter[];
   formats: ImportedBookFormat[];
-  pdf?: ImportedPdfDocument;
   sourceName?: string;
-  sourceFormat?: ImportedSourceFormat;
+  sourceFormat: ImportedSourceFormat;
   imported: true;
   createdAt: number;
 };
 
 export type ImportedBookMetadata = Omit<
   ImportedBookRecord,
-  'paragraphs' | 'chapters' | 'formats' | 'pdf'
+  'paragraphs' | 'chapters' | 'formats'
 >;
 
 export type ParseImportedBookOptions = {
   onProgress?: (progress: number) => void;
 };
 
-export type ImportedSourceFormat = 'markdown' | 'txt' | 'pdf' | 'epub';
+export type ImportedSourceFormat = 'epub';
 
 const DATABASE_NAME = 'yuguang-library';
-const DATABASE_VERSION = 2;
+const DATABASE_VERSION = 3;
 const METADATA_STORE_NAME = 'books';
 const CONTENT_STORE_NAME = 'bookContents';
 const SCHEMA_VERSION = 2;
 const COVER_DATA_URL_LIMIT = 3 * 1024 * 1024;
 const coverColors = ['#5276c7', '#5c7f70', '#ef8b74', '#c99a52', '#6b657f'];
 
-const normalizeWereadCoverUrl = (value: unknown) => {
-  if (typeof value !== 'string' || value.length > 2_048) {
-    return undefined;
-  }
-
-  try {
-    const url = new URL(value);
-
-    return url.protocol === 'https:' && url.hostname === 'cdn.weread.qq.com'
-      ? url.href
-      : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
 const isStoredCover = (value: string) => (
-  (
-    value.length <= COVER_DATA_URL_LIMIT
-    && /^data:image\/jpeg;base64,[a-z\d+/]+=*$/i.test(value)
-  )
-  || normalizeWereadCoverUrl(value) === value
+  value.length <= COVER_DATA_URL_LIMIT
+  && /^data:image\/jpeg;base64,[a-z\d+/]+=*$/i.test(value)
 );
 
 type StoredBookMetadata = ImportedBookMetadata & {
@@ -155,7 +128,6 @@ type StoredBookContent = {
   paragraphs: string[];
   chapters: ImportedBookChapter[];
   formats: ImportedBookFormat[];
-  pdf?: ImportedPdfDocument;
   schemaVersion: typeof SCHEMA_VERSION;
 };
 
@@ -442,13 +414,7 @@ const readBookMetadata = (value: unknown): ImportedBookMetadata | null => {
       sourceName !== undefined
       && (typeof sourceName !== 'string' || !sourceName || sourceName.length > 512)
     )
-    || (
-      sourceFormat !== undefined
-      && sourceFormat !== 'markdown'
-      && sourceFormat !== 'txt'
-      && sourceFormat !== 'pdf'
-      && sourceFormat !== 'epub'
-    )
+    || sourceFormat !== 'epub'
     || imported !== true
     || typeof createdAt !== 'number'
     || !Number.isFinite(createdAt)
@@ -456,10 +422,6 @@ const readBookMetadata = (value: unknown): ImportedBookMetadata | null => {
   ) {
     return null;
   }
-
-  const normalizedSourceFormat = typeof sourceFormat === 'string'
-    ? sourceFormat as ImportedSourceFormat
-    : undefined;
 
   return {
     id,
@@ -469,53 +431,9 @@ const readBookMetadata = (value: unknown): ImportedBookMetadata | null => {
     ...(typeof cover === 'string' ? { cover } : {}),
     chapterTitle,
     ...(typeof sourceName === 'string' ? { sourceName } : {}),
-    ...(normalizedSourceFormat ? { sourceFormat: normalizedSourceFormat } : {}),
+    sourceFormat,
     imported,
     createdAt,
-  };
-};
-
-const readPdfDocument = (value: unknown): ImportedPdfDocument | null | undefined => {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!isRecord(value)) {
-    return null;
-  }
-
-  const {
-    file,
-    fingerprint,
-    pageCount,
-    pageNumbers,
-  } = value;
-  if (
-    !(file instanceof Blob)
-    || file.size === 0
-    || (file.type && file.type !== 'application/pdf')
-    || typeof fingerprint !== 'string'
-    || !fingerprint
-    || typeof pageCount !== 'number'
-    || !Number.isInteger(pageCount)
-    || pageCount < 1
-    || !Array.isArray(pageNumbers)
-    || !pageNumbers.length
-    || pageNumbers.some((pageNumber, index) => (
-      typeof pageNumber !== 'number'
-      || !Number.isInteger(pageNumber)
-      || pageNumber < 1
-      || pageNumber > pageCount
-      || (index > 0 && pageNumber <= pageNumbers[index - 1])
-    ))
-  ) {
-    return null;
-  }
-
-  return {
-    file,
-    fingerprint,
-    pageCount,
-    pageNumbers: [...pageNumbers],
   };
 };
 
@@ -537,13 +455,7 @@ const readImportedBook = (value: unknown): ImportedBookRecord | null => {
 
   const chapters = readBookChapters(value.chapters, paragraphs.length);
   const formats = readBookFormats(value.formats, paragraphs);
-  const pdf = readPdfDocument(value.pdf);
-  if (
-    !chapters
-    || !formats
-    || pdf === null
-    || (pdf && metadata.sourceFormat !== 'pdf')
-  ) {
+  if (!chapters || !formats) {
     return null;
   }
 
@@ -552,7 +464,6 @@ const readImportedBook = (value: unknown): ImportedBookRecord | null => {
     paragraphs,
     chapters,
     formats,
-    ...(pdf ? { pdf } : {}),
   };
 };
 
@@ -581,8 +492,7 @@ const readStoredContent = (value: unknown): StoredBookContent | null => {
 
   const chapters = readBookChapters(value.chapters, value.paragraphs.length);
   const formats = readBookFormats(value.formats, value.paragraphs);
-  const pdf = readPdfDocument(value.pdf);
-  if (!chapters || !formats || pdf === null) {
+  if (!chapters || !formats) {
     return null;
   }
 
@@ -591,7 +501,6 @@ const readStoredContent = (value: unknown): StoredBookContent | null => {
     paragraphs: value.paragraphs,
     chapters,
     formats,
-    ...(pdf ? { pdf } : {}),
     schemaVersion: SCHEMA_VERSION,
   };
 };
@@ -604,7 +513,7 @@ const toStoredMetadata = (book: ImportedBookRecord): StoredBookMetadata => ({
   ...(book.cover ? { cover: book.cover } : {}),
   chapterTitle: book.chapterTitle,
   ...(book.sourceName ? { sourceName: book.sourceName } : {}),
-  ...(book.sourceFormat ? { sourceFormat: book.sourceFormat } : {}),
+  sourceFormat: book.sourceFormat,
   imported: true,
   createdAt: book.createdAt,
   schemaVersion: SCHEMA_VERSION,
@@ -615,7 +524,6 @@ const toStoredContent = (book: ImportedBookRecord): StoredBookContent => ({
   paragraphs: book.paragraphs,
   chapters: book.chapters,
   formats: book.formats,
-  ...(book.pdf ? { pdf: book.pdf } : {}),
   schemaVersion: SCHEMA_VERSION,
 });
 
@@ -657,6 +565,19 @@ const completeTransaction = async <T>(
   }
 };
 
+const normalizeStoredEpub = (value: unknown) => {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const legacyEpub = value.sourceFormat === undefined
+    && typeof value.sourceName === 'string'
+    && value.sourceName.toLowerCase().endsWith('.epub');
+
+  return value.sourceFormat === 'epub' || legacyEpub
+    ? { ...value, sourceFormat: 'epub' }
+    : undefined;
+};
+
 const openDatabase = () => new Promise<IDBDatabase>((resolve, reject) => {
   const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
   let blocked = false;
@@ -681,24 +602,55 @@ const openDatabase = () => new Promise<IDBDatabase>((resolve, reject) => {
       ? transaction.objectStore(CONTENT_STORE_NAME)
       : database.createObjectStore(CONTENT_STORE_NAME, { keyPath: 'id' });
 
-    if (event.oldVersion !== 1) {
+    if (event.oldVersion === 0) {
       return;
     }
 
+    const retainedIds = new Set<IDBValidKey>();
     const cursorRequest = metadataStore.openCursor();
 
     cursorRequest.onsuccess = () => {
       const cursor = cursorRequest.result;
 
       if (!cursor) {
+        const contentCursorRequest = contentStore.openCursor();
+
+        contentCursorRequest.onsuccess = () => {
+          const contentCursor = contentCursorRequest.result;
+
+          if (!contentCursor) {
+            return;
+          }
+          if (!retainedIds.has(contentCursor.primaryKey)) {
+            contentCursor.delete();
+          }
+          contentCursor.continue();
+        };
+        contentCursorRequest.onerror = () => transaction.abort();
         return;
       }
 
-      const legacyBook = readImportedBook(cursor.value);
-      if (legacyBook) {
+      const epubValue = normalizeStoredEpub(cursor.value);
+      if (!epubValue) {
+        cursor.delete();
+        cursor.continue();
+        return;
+      }
+
+      if (event.oldVersion === 1) {
+        const legacyBook = readImportedBook(epubValue);
+
+        if (!legacyBook) {
+          cursor.delete();
+          cursor.continue();
+          return;
+        }
         contentStore.put(toStoredContent(legacyBook));
         cursor.update(toStoredMetadata(legacyBook));
+      } else if (cursor.value.sourceFormat !== 'epub') {
+        cursor.update(epubValue);
       }
+      retainedIds.add(cursor.primaryKey);
       cursor.continue();
     };
     cursorRequest.onerror = () => transaction.abort();
@@ -717,11 +669,18 @@ const openDatabase = () => new Promise<IDBDatabase>((resolve, reject) => {
 
 const normalizePlainText = (value: string) => value.replace(/\s+/g, ' ').trim();
 
-const unicodeLength = (value: string) => Array.from(value).length;
-
 const truncateUnicode = (value: string, maximumLength: number) => (
   Array.from(value).slice(0, maximumLength).join('')
 );
+
+const conciseBookTitle = (value: string) => {
+  if (Array.from(value).length <= 48) {
+    return value;
+  }
+  const subtitleIndex = value.search(/[（(]/u);
+
+  return subtitleIndex >= 4 ? value.slice(0, subtitleIndex).trim() : value;
+};
 
 type MarkdownHeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -743,7 +702,8 @@ const normalizeMarkdownTextNode = (value: string) => value
       ? ''
       : ' ';
   })
-  .replace(/[ \t]+/g, ' ');
+  .replace(/[ \t]+/g, ' ')
+  .replace(/(?<!\\)(?:\*{2}|~{2})/g, '');
 
 const appendInlineRun = (
   runs: ImportedInlineRun[],
@@ -849,112 +809,6 @@ const findMarkdownTitle = (tree: Root) => {
   return heading?.type === 'heading'
     ? inlineRunsText(normalizeInlineRuns(heading.children)) || undefined
     : undefined;
-};
-
-const yamlFrontMatterKeys = new Set([
-  'title',
-  'author',
-  'creator',
-  'date',
-  'language',
-  'lang',
-  'description',
-  'tags',
-  'doc_type',
-  'cover',
-]);
-
-type MarkdownFrontMatter = {
-  source: string;
-  title?: string;
-  author?: string;
-  cover?: string;
-  docType?: string;
-};
-
-const readConservativeYamlFrontMatter = (source: string): MarkdownFrontMatter => {
-  const unchanged = { source };
-  const lines = source.split('\n');
-  if (lines[0] !== '---') {
-    return unchanged;
-  }
-
-  let closingIndex = -1;
-  const searchLimit = Math.min(lines.length, 65);
-
-  for (let index = 1; index < searchLimit; index += 1) {
-    if (lines[index] === '---' || lines[index] === '...') {
-      closingIndex = index;
-      break;
-    }
-  }
-
-  if (closingIndex < 0) {
-    return unchanged;
-  }
-
-  const metadataLines = lines.slice(1, closingIndex)
-    .filter((line) => line.trim() && !line.trimStart().startsWith('#'));
-  const fields = metadataLines.map((line) => (
-    line.match(/^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/)
-  ));
-  if (
-    !fields.length
-    || fields.some((field) => !field)
-    || !fields.some((field) => yamlFrontMatterKeys.has(field?.[1].toLowerCase() ?? ''))
-  ) {
-    return unchanged;
-  }
-
-  const metadata = new Map<string, string>();
-  fields.forEach((field) => {
-    if (field) {
-      metadata.set(field[1].toLowerCase(), field[2]);
-    }
-  });
-  const readText = (key: string) => {
-    const value = metadata.get(key)?.trim();
-    const quote = value?.[0];
-
-    if (!value) {
-      return undefined;
-    }
-    if ((quote === '"' || quote === "'") && value.at(-1) === quote) {
-      return value.slice(1, -1).trim() || undefined;
-    }
-    return value;
-  };
-
-  const contentLines = lines.slice(closingIndex + 1);
-  if (!contentLines[0]) {
-    contentLines.shift();
-  }
-  return {
-    source: contentLines.join('\n'),
-    title: readText('title'),
-    author: readText('author') ?? readText('creator'),
-    cover: readText('cover'),
-    docType: readText('doc_type'),
-  };
-};
-
-const cleanWereadMarkdown = (source: string) => {
-  let cleaned = source.replace(
-    /^#\s+元数据\s*$[\s\S]*?(?=^#\s+(?:高亮划线|读书笔记|本书评论)\s*$)/mu,
-    '',
-  )
-  .replace(/^#\s+高亮划线\s*$/gmu, '')
-  .replace(/^>\s*⏱.*$/gmu, '')
-  .replace(/\n{3,}/g, '\n\n')
-  .trim();
-
-  while (/(?:^|\n)#\s+(?:读书笔记|本书评论)\s*$/u.test(cleaned)) {
-    cleaned = cleaned.replace(
-      /(?:^|\n)#\s+(?:读书笔记|本书评论)\s*$/u,
-      '',
-    ).trim();
-  }
-  return cleaned;
 };
 
 const parseMarkdownContent = (tree: Root, title: string) => {
@@ -1206,210 +1060,10 @@ const parseMarkdownContent = (tree: Root, title: string) => {
   return { paragraphs, chapters, formats };
 };
 
-const plainTextChapterNumber = String.raw`[\p{Script=Han}〇零一二三四五六七八九十百千万\d]+`;
-const plainTextHeadingPattern = new RegExp(
-  String.raw`^(?:第${plainTextChapterNumber}[章节回部卷篇](?:\s+.*)?`
-    + String.raw`|卷[\p{Script=Han}\d]+(?:\s+.*)?`
-    + String.raw`|序章|序言|前言|楔子|尾声|后记|跋`
-    + String.raw`|Chapter\s+\d+(?:[.:：\s].*)?)$`,
-  'iu',
-);
-const plainTextListPattern = /^(\s*)(?:(\d{1,4})[.)、]|[-+*•])\s+(.+)$/u;
-const plainTextSceneBreakPattern = /^\s*(?:[-—–_=＊*·•]\s*){3,}$/u;
-const plainTextTerminalPattern = /[。！？!?；;…][”’"'）》】〕」』]*$/u;
-const cjkBoundaryPattern = /[\u2e80-\u9fff\uf900-\ufaff]/u;
-const plainTextCodePattern = new RegExp(
-  String.raw`(?:[{};]|=>`
-    + String.raw`|^\s*(?:const|let|var|function|class|interface|type|import|export)\b`
-    + String.raw`|^\s*(?:def|from|if|for|while|return)\b`
-    + String.raw`|^\s*#include\b`
-    + String.raw`|^\s*[\w.[\]'"-]+\s*=\s*\S)`,
-  'iu',
-);
-
-const medianOf = (values: readonly number[]) => {
-  const sorted = [...values].sort((left, right) => left - right);
-
-  return sorted[Math.floor(sorted.length / 2)] ?? 0;
-};
-
-const looksPreformattedText = (lines: readonly string[]) => {
-  const indented = lines.filter((line) => /^(?:\t| {4})/.test(line)).length;
-  const codeSyntax = lines.filter((line) => (
-    plainTextCodePattern.test(line)
-  )).length;
-  const columnar = lines.filter((line) => (
-    line.includes('\t') || /\S(?: {2,}\S){2,}/u.test(line)
-  )).length;
-  const logs = lines.filter((line) => (
-    /^\s*(?:\d{4}-\d{2}-\d{2}|\[?\d{2}:\d{2}:\d{2}|TRACE\b|DEBUG\b|INFO\b|WARN\b|ERROR\b)/i
-      .test(line)
-  )).length;
-
-  return /^\s*(?:```|~~~)/.test(lines[0] ?? '')
-    || (
-      lines.length > 1
-      && indented >= Math.max(2, Math.ceil(lines.length * 0.5))
-      && codeSyntax >= Math.max(1, Math.ceil(lines.length * 0.25))
-    )
-    || columnar >= Math.max(2, Math.ceil(lines.length * 0.6))
-    || logs >= Math.max(2, Math.ceil(lines.length * 0.6));
-};
-
-const looksHardWrappedProse = (lines: readonly string[]) => {
-  if (lines.length < 3 || looksPreformattedText(lines)) {
-    return false;
-  }
-  const trimmed = lines.map((line) => line.trim());
-  if (
-    trimmed.some((line) => (
-      plainTextHeadingPattern.test(line)
-      || plainTextListPattern.test(line)
-      || plainTextSceneBreakPattern.test(line)
-    ))
-  ) {
-    return false;
-  }
-  const lengths = trimmed.map(unicodeLength);
-  const median = medianOf(lengths);
-  const regularLines = lengths.slice(0, -1).filter((length) => (
-    length >= median * 0.7 && length <= median * 1.35
-  )).length;
-  const terminalLines = trimmed.slice(0, -1).filter((line) => (
-    plainTextTerminalPattern.test(line)
-  )).length;
-  const prosePunctuationLines = trimmed.slice(0, -1).filter((line) => (
-    /[，,；;：:]/u.test(line)
-  )).length;
-  const lastLineIsShort = (lengths.at(-1) ?? median) <= median * 0.82;
-
-  return median >= 32
-    && regularLines >= Math.ceil((lines.length - 1) * 0.75)
-    && terminalLines <= Math.floor((lines.length - 1) * 0.45)
-    && prosePunctuationLines >= Math.ceil((lines.length - 1) * 0.25)
-    && lastLineIsShort;
-};
-
-const joinPlainTextLines = (left: string, right: string) => {
-  const normalizedLeft = left.trim();
-  const normalizedRight = right.trim();
-  const leftCharacter = normalizedLeft.at(-1) ?? '';
-  const rightCharacter = normalizedRight[0] ?? '';
-  const separator = cjkBoundaryPattern.test(leftCharacter)
-    || cjkBoundaryPattern.test(rightCharacter)
-    ? ''
-    : ' ';
-
-  return `${normalizedLeft}${separator}${normalizedRight}`;
-};
-
-const preservedLineRuns = (lines: readonly string[]): ImportedInlineRun[] => (
-  lines.flatMap((line, index) => [
-    ...(index ? [{ kind: 'break', value: '\n' } as ImportedInlineRun] : []),
-    { kind: 'text', value: line.trim().normalize('NFC') } as ImportedInlineRun,
-  ])
-);
-
-const parsePlainTextContent = (source: string, title: string) => {
-  const paragraphs: string[] = [];
-  const chapters: ImportedBookChapter[] = [];
-  const formats: ImportedBookFormat[] = [];
-  let nextGroupId = 1;
-
-  const appendParagraph = (text: string, runs?: ImportedInlineRun[]) => {
-    const normalized = text.normalize('NFC').trim();
-    if (!normalized || normalized === title) {
-      return;
-    }
-    const paragraphIndex = paragraphs.length;
-
-    paragraphs.push(normalized);
-    if (runs) {
-      formats.push({ kind: 'rich-text', paragraphIndex, inlines: runs });
-    }
-  };
-
-  source.split(/\n[ \t]*\n+/).forEach((block) => {
-    const lines = block.split('\n').map((line) => line.trimEnd()).filter((line) => line.trim());
-    if (!lines.length) {
-      return;
-    }
-    const trimmed = lines.map((line) => line.trim());
-    const heading = trimmed.length === 1 && plainTextHeadingPattern.test(trimmed[0]);
-    if (heading) {
-      if (trimmed[0] !== title) {
-        const paragraphIndex = paragraphs.length;
-
-        paragraphs.push(trimmed[0]);
-        chapters.push({ title: trimmed[0], level: 1, paragraphIndex });
-        formats.push({ kind: 'heading', paragraphIndex, level: 2 });
-      }
-      return;
-    }
-    if (trimmed.length === 1 && plainTextSceneBreakPattern.test(trimmed[0])) {
-      const paragraphIndex = paragraphs.length;
-
-      paragraphs.push('—');
-      formats.push({ kind: 'thematic-break', paragraphIndex });
-      return;
-    }
-    const listMatches = lines.map((line) => line.match(plainTextListPattern));
-    if (listMatches.every(Boolean)) {
-      const groupId = nextGroupId;
-
-      nextGroupId += 1;
-      listMatches.forEach((match, index) => {
-        if (!match) {
-          return;
-        }
-        const paragraphIndex = paragraphs.length;
-        const ordered = Boolean(match[2]);
-
-        paragraphs.push(match[3].trim());
-        formats.push({
-          kind: 'list-item',
-          paragraphIndex,
-          groupId,
-          ordered,
-          ordinal: ordered ? Number(match[2]) : index + 1,
-          depth: Math.min(Math.floor(match[1].replace(/\t/g, '  ').length / 2), 6),
-        });
-      });
-      return;
-    }
-    if (looksPreformattedText(lines)) {
-      const paragraphIndex = paragraphs.length;
-      const fence = /^\s*(```|~~~)/.exec(lines[0]);
-      const content = fence
-        && lines.length > 1
-        && lines.at(-1)?.trim().startsWith(fence[1])
-        ? lines.slice(1, -1)
-        : lines;
-
-      paragraphs.push(content.join('\n').normalize('NFC') || ' ');
-      formats.push({ kind: 'code-block', paragraphIndex, language: '' });
-      return;
-    }
-    if (trimmed.length === 1) {
-      appendParagraph(trimmed[0]);
-      return;
-    }
-    if (looksHardWrappedProse(lines)) {
-      appendParagraph(trimmed.reduce(joinPlainTextLines));
-      return;
-    }
-    const text = trimmed.join('\n').normalize('NFC');
-
-    appendParagraph(text, preservedLineRuns(trimmed));
-  });
-
-  return { paragraphs, chapters, formats };
-};
-
-const importedContentsTitlePattern = /^(?:目录|目次|目录页|contents|table\s+of\s+contents)$/iu;
+const importedContentsTitlePattern = /^(?:目\s*录(?:页)?|目\s*次|contents|table\s+of\s+contents)$/iu;
 
 const stripImportedContents = (
-  content: ReturnType<typeof parsePlainTextContent>,
+  content: ReturnType<typeof parseMarkdownContent>,
 ) => {
   const formatByParagraph = new Map(
     content.formats.map((format) => [format.paragraphIndex, format]),
@@ -1495,52 +1149,21 @@ export const parseImportedBook = async (
   const document = await readDocumentFile(file, {
     onProgress: (progress) => options.onProgress?.(progress * 0.72),
   });
-  const markdownDocument: MarkdownFrontMatter = document.markdown
-    ? readConservativeYamlFrontMatter(document.source)
-    : { source: document.source };
-  const cleaned = markdownDocument.docType === 'weread-highlights-reviews'
-    ? cleanWereadMarkdown(markdownDocument.source)
-    : markdownDocument.source;
-  const markdownTree = document.markdown ? parseMarkdownAst(cleaned) : undefined;
-  const markdownTitle = markdownTree ? findMarkdownTitle(markdownTree) : undefined;
-  const fileTitle = file.name.replace(/\.(?:txt|md|markdown|pdf|epub)$/i, '').trim();
+  const markdownTree = parseMarkdownAst(document.source);
+  const markdownTitle = findMarkdownTitle(markdownTree);
+  const fileTitle = file.name.replace(/\.epub$/i, '').trim();
   const title = truncateUnicode(
     normalizePlainText(
-      document.title
-      || markdownDocument.title
+      conciseBookTitle(document.title ?? '')
       || markdownTitle
       || fileTitle
       || '未命名书籍',
     ),
     48,
   );
-  const parsedContent = document.pdf
-    ? {
-        paragraphs: document.pdf.pageNumbers.map((pageNumber) => `第 ${pageNumber} 页`),
-        chapters: document.pdf.outline.flatMap((chapter, index, outline) => {
-          const paragraphIndex = document.pdf?.pageNumbers.findIndex(
-            (pageNumber) => pageNumber >= chapter.pageNumber,
-          ) ?? -1;
-          const duplicate = outline.slice(0, index).some((candidate) => (
-            candidate.title === chapter.title
-            && candidate.pageNumber === chapter.pageNumber
-          ));
-
-          return paragraphIndex >= 0 && !duplicate
-            ? [{
-                title: chapter.title,
-                level: chapter.level,
-                paragraphIndex,
-              }]
-            : [];
-        }),
-        formats: [],
-      }
-    : stripImportedContents(
-        markdownTree
-          ? parseMarkdownContent(markdownTree, title)
-          : parsePlainTextContent(cleaned, title),
-      );
+  const parsedContent = stripImportedContents(
+    parseMarkdownContent(markdownTree, title),
+  );
   const { paragraphs, chapters, formats } = parsedContent;
   options.onProgress?.(0.84);
 
@@ -1548,18 +1171,15 @@ export const parseImportedBook = async (
     throw new Error('文件中没有可阅读的正文');
   }
 
-  const id = await createBookId(
-    title,
-    document.pdf?.fingerprint ?? document.source,
-  );
+  const id = await createBookId(title, document.source);
   options.onProgress?.(1);
-  const cover = document.cover ?? normalizeWereadCoverUrl(markdownDocument.cover);
+  const { cover } = document;
 
   return {
     id,
     title,
     author: truncateUnicode(
-      normalizePlainText(document.author || markdownDocument.author || '本地导入'),
+      normalizePlainText(document.author || '本地导入'),
       48,
     ),
     color: coverColors[hashTitle(title) % coverColors.length],
@@ -1569,21 +1189,7 @@ export const parseImportedBook = async (
     paragraphs,
     chapters,
     formats,
-    ...(document.pdf ? {
-      pdf: {
-        file: document.pdf.file,
-        fingerprint: document.pdf.fingerprint,
-        pageCount: document.pdf.pageCount,
-        pageNumbers: document.pdf.pageNumbers,
-      },
-    } : {}),
-    sourceFormat: file.name.toLowerCase().endsWith('.txt')
-      ? 'txt'
-      : file.name.toLowerCase().endsWith('.pdf')
-        ? 'pdf'
-        : file.name.toLowerCase().endsWith('.epub')
-          ? 'epub'
-          : 'markdown',
+    sourceFormat: 'epub',
     imported: true,
     createdAt: Date.now(),
   };
@@ -1659,7 +1265,6 @@ export const loadImportedBooks = async (): Promise<ImportedBookRecord[]> => {
               paragraphs: content.paragraphs,
               chapters: content.chapters,
               formats: content.formats,
-              ...(content.pdf ? { pdf: content.pdf } : {}),
             }]
           : [];
       });
@@ -1707,7 +1312,6 @@ export const loadImportedBook = async (id: string): Promise<ImportedBookRecord> 
       paragraphs: content.paragraphs,
       chapters: content.chapters,
       formats: content.formats,
-      ...(content.pdf ? { pdf: content.pdf } : {}),
     };
   } finally {
     database.close();
@@ -1800,7 +1404,6 @@ export const deleteImportedBook = async (id: string): Promise<ImportedBookRecord
           paragraphs: content.paragraphs,
           chapters: content.chapters,
           formats: content.formats,
-          ...(content.pdf ? { pdf: content.pdf } : {}),
         };
         metadataStore.delete(id);
         contentStore.delete(id);
