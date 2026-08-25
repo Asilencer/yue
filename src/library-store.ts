@@ -84,6 +84,7 @@ export type ImportedBookRecord = {
   title: string;
   author: string;
   color: string;
+  cover?: string;
   chapterTitle: string;
   paragraphs: string[];
   chapters: ImportedBookChapter[];
@@ -109,6 +110,7 @@ const DATABASE_VERSION = 2;
 const METADATA_STORE_NAME = 'books';
 const CONTENT_STORE_NAME = 'bookContents';
 const SCHEMA_VERSION = 2;
+const COVER_DATA_URL_LIMIT = 3 * 1024 * 1024;
 const coverColors = ['#5276c7', '#5c7f70', '#ef8b74', '#c99a52', '#6b657f'];
 
 type StoredBookMetadata = ImportedBookMetadata & {
@@ -380,6 +382,7 @@ const readBookMetadata = (value: unknown): ImportedBookMetadata | null => {
     title,
     author,
     color,
+    cover,
     chapterTitle,
     sourceFormat,
     imported,
@@ -392,6 +395,14 @@ const readBookMetadata = (value: unknown): ImportedBookMetadata | null => {
     || !title
     || typeof author !== 'string'
     || typeof color !== 'string'
+    || (
+      cover !== undefined
+      && (
+        typeof cover !== 'string'
+        || cover.length > COVER_DATA_URL_LIMIT
+        || !/^data:image\/jpeg;base64,[a-z\d+/]+=*$/i.test(cover)
+      )
+    )
     || typeof chapterTitle !== 'string'
     || (
       sourceFormat !== undefined
@@ -417,6 +428,7 @@ const readBookMetadata = (value: unknown): ImportedBookMetadata | null => {
     title,
     author,
     color,
+    ...(typeof cover === 'string' ? { cover } : {}),
     chapterTitle,
     ...(normalizedSourceFormat ? { sourceFormat: normalizedSourceFormat } : {}),
     imported,
@@ -492,6 +504,7 @@ const toStoredMetadata = (book: ImportedBookRecord): StoredBookMetadata => ({
   title: book.title,
   author: book.author,
   color: book.color,
+  ...(book.cover ? { cover: book.cover } : {}),
   chapterTitle: book.chapterTitle,
   ...(book.sourceFormat ? { sourceFormat: book.sourceFormat } : {}),
   imported: true,
@@ -750,10 +763,17 @@ const yamlFrontMatterKeys = new Set([
   'tags',
 ]);
 
-const stripConservativeYamlFrontMatter = (source: string) => {
+type MarkdownFrontMatter = {
+  source: string;
+  title?: string;
+  author?: string;
+};
+
+const readConservativeYamlFrontMatter = (source: string): MarkdownFrontMatter => {
+  const unchanged = { source };
   const lines = source.split('\n');
   if (lines[0] !== '---') {
-    return source;
+    return unchanged;
   }
 
   let closingIndex = -1;
@@ -767,27 +787,50 @@ const stripConservativeYamlFrontMatter = (source: string) => {
   }
 
   if (closingIndex < 0) {
-    return source;
+    return unchanged;
   }
 
   const metadataLines = lines.slice(1, closingIndex)
     .filter((line) => line.trim() && !line.trimStart().startsWith('#'));
   const fields = metadataLines.map((line) => (
-    line.match(/^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*.*$/)
+    line.match(/^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/)
   ));
   if (
     !fields.length
     || fields.some((field) => !field)
     || !fields.some((field) => yamlFrontMatterKeys.has(field?.[1].toLowerCase() ?? ''))
   ) {
-    return source;
+    return unchanged;
   }
+
+  const metadata = new Map<string, string>();
+  fields.forEach((field) => {
+    if (field) {
+      metadata.set(field[1].toLowerCase(), field[2]);
+    }
+  });
+  const readText = (key: string) => {
+    const value = metadata.get(key)?.trim();
+    const quote = value?.[0];
+
+    if (!value) {
+      return undefined;
+    }
+    if ((quote === '"' || quote === "'") && value.at(-1) === quote) {
+      return value.slice(1, -1).trim() || undefined;
+    }
+    return value;
+  };
 
   const contentLines = lines.slice(closingIndex + 1);
   if (!contentLines[0]) {
     contentLines.shift();
   }
-  return contentLines.join('\n');
+  return {
+    source: contentLines.join('\n'),
+    title: readText('title'),
+    author: readText('author') ?? readText('creator'),
+  };
 };
 
 const parseMarkdownContent = (tree: Root, title: string) => {
@@ -1239,6 +1282,75 @@ const parsePlainTextContent = (source: string, title: string) => {
   return { paragraphs, chapters, formats };
 };
 
+const importedContentsTitlePattern = /^(?:目录|目次|目录页|contents|table\s+of\s+contents)$/iu;
+
+const stripImportedContents = (
+  content: ReturnType<typeof parsePlainTextContent>,
+) => {
+  const formatByParagraph = new Map(
+    content.formats.map((format) => [format.paragraphIndex, format]),
+  );
+  const searchLimit = Math.min(80, Math.max(8, Math.ceil(content.paragraphs.length * 0.15)));
+  const start = content.paragraphs.findIndex((paragraph, index) => {
+    if (index >= searchLimit || !importedContentsTitlePattern.test(paragraph.trim())) {
+      return false;
+    }
+    return formatByParagraph.get(index)?.kind === 'heading' || index < 5;
+  });
+
+  if (start < 0) {
+    return content;
+  }
+
+  const nextHeading = content.formats
+    .filter((format) => format.kind === 'heading' && format.paragraphIndex > start)
+    .sort((left, right) => left.paragraphIndex - right.paragraphIndex)[0];
+  let end = nextHeading?.paragraphIndex;
+
+  if (end === undefined) {
+    let cursor = start + 1;
+    let entryCount = 0;
+
+    while (cursor < content.paragraphs.length) {
+      const paragraph = content.paragraphs[cursor];
+      const format = formatByParagraph.get(cursor);
+      const indexEntry = format?.kind === 'list-item'
+        || format?.kind === 'table-row'
+        || /(?:\.{2,}|…{2,}|·{2,}|\s)\s*\d{1,4}$/u.test(paragraph);
+
+      if (!indexEntry) {
+        break;
+      }
+      entryCount += 1;
+      cursor += 1;
+    }
+    if (entryCount < 2) {
+      return content;
+    }
+    end = cursor;
+  }
+
+  const removedCount = end - start;
+  const remapIndex = (paragraphIndex: number) => (
+    paragraphIndex < start ? paragraphIndex : paragraphIndex - removedCount
+  );
+  const paragraphs = content.paragraphs.filter((_, index) => (
+    index < start || index >= end
+  ));
+  const chapters = content.chapters.flatMap((chapter): ImportedBookChapter[] => (
+    chapter.paragraphIndex >= start && chapter.paragraphIndex < end
+      ? []
+      : [{ ...chapter, paragraphIndex: remapIndex(chapter.paragraphIndex) }]
+  ));
+  const formats = content.formats.flatMap((format): ImportedBookFormat[] => (
+    format.paragraphIndex >= start && format.paragraphIndex < end
+      ? []
+      : [{ ...format, paragraphIndex: remapIndex(format.paragraphIndex) }]
+  ));
+
+  return { paragraphs, chapters, formats };
+};
+
 const hashTitle = (title: string) => Array.from(title)
   .reduce((hash, character) => hash + (character.codePointAt(0) ?? 0), 0);
 
@@ -1259,21 +1371,28 @@ export const parseImportedBook = async (
   const document = await readDocumentFile(file, {
     onProgress: (progress) => options.onProgress?.(progress * 0.72),
   });
-  const cleaned = document.markdown
-    ? stripConservativeYamlFrontMatter(document.source)
-    : document.source;
+  const markdownDocument: MarkdownFrontMatter = document.markdown
+    ? readConservativeYamlFrontMatter(document.source)
+    : { source: document.source };
+  const cleaned = markdownDocument.source;
   const markdownTree = document.markdown ? parseMarkdownAst(cleaned) : undefined;
   const markdownTitle = markdownTree ? findMarkdownTitle(markdownTree) : undefined;
   const fileTitle = file.name.replace(/\.(?:txt|md|markdown|pdf|epub)$/i, '').trim();
   const title = truncateUnicode(
     normalizePlainText(
-      document.title || markdownTitle || fileTitle || '未命名书籍',
+      document.title
+      || markdownDocument.title
+      || markdownTitle
+      || fileTitle
+      || '未命名书籍',
     ),
     48,
   );
-  const parsedContent = markdownTree
-    ? parseMarkdownContent(markdownTree, title)
-    : parsePlainTextContent(cleaned, title);
+  const parsedContent = stripImportedContents(
+    markdownTree
+      ? parseMarkdownContent(markdownTree, title)
+      : parsePlainTextContent(cleaned, title),
+  );
   const { paragraphs, chapters, formats } = parsedContent;
   options.onProgress?.(0.84);
 
@@ -1288,10 +1407,11 @@ export const parseImportedBook = async (
     id,
     title,
     author: truncateUnicode(
-      normalizePlainText(document.author || '本地导入'),
+      normalizePlainText(document.author || markdownDocument.author || '本地导入'),
       48,
     ),
     color: coverColors[hashTitle(title) % coverColors.length],
+    ...(document.cover ? { cover: document.cover } : {}),
     chapterTitle: title,
     paragraphs,
     chapters,

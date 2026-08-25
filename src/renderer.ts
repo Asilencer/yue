@@ -42,6 +42,14 @@ import notesCover from './assets/covers/notes-cover.jpg';
 import plantsCover from './assets/covers/plants-cover.jpg';
 import routeCover from './assets/covers/route-cover.jpg';
 import springCover from './assets/covers/spring-cover.jpg';
+import distanceCoverTemplate from './assets/covers/backgrounds/distance.jpg';
+import lakeCoverTemplate from './assets/covers/backgrounds/lake.jpg';
+import lettersCoverTemplate from './assets/covers/backgrounds/letters.jpg';
+import northCoverTemplate from './assets/covers/backgrounds/north.jpg';
+import notesCoverTemplate from './assets/covers/backgrounds/notes.jpg';
+import plantsCoverTemplate from './assets/covers/backgrounds/plants.jpg';
+import routeCoverTemplate from './assets/covers/backgrounds/route.jpg';
+import springCoverTemplate from './assets/covers/backgrounds/spring.jpg';
 import landingCityDusk from './assets/scenes/landing-city-dusk-v2.png';
 import landingCityMorning from './assets/scenes/landing-city-morning-v2.png';
 import landingCoastAfternoon from './assets/scenes/landing-coast-afternoon-v2.png';
@@ -2490,6 +2498,16 @@ const enterLibrary = () => {
 };
 
 const bookMaterials: BookMaterial[] = ['cloth', 'paper', 'aged'];
+const importedCoverTemplates = [
+  lakeCoverTemplate,
+  springCoverTemplate,
+  lettersCoverTemplate,
+  northCoverTemplate,
+  plantsCoverTemplate,
+  routeCoverTemplate,
+  notesCoverTemplate,
+  distanceCoverTemplate,
+];
 
 const hashBookIdentity = (book: Book) => Array.from(book.id).reduce(
   (hash, character) => (
@@ -2504,13 +2522,30 @@ const getBookCoverPresentation = (book: Book) => {
   return {
     material: book.material ?? bookMaterials[hash % bookMaterials.length],
     variant: Math.floor(hash / 8) % 4,
+    template: book.imported && !book.cover
+      ? importedCoverTemplates[hash % importedCoverTemplates.length]
+      : undefined,
+    templateIndex: hash % importedCoverTemplates.length,
   };
 };
 
-const applyBookCoverArt = (element: HTMLElement, cover?: string) => {
+const applyBookCoverArt = (
+  element: HTMLElement,
+  cover?: string,
+  template?: string,
+  templateIndex?: number,
+) => {
+  const art = cover ?? template;
+
   element.toggleAttribute('data-has-cover-art', Boolean(cover));
-  if (cover) {
-    element.style.setProperty('--book-cover-art', `url("${cover}")`);
+  element.toggleAttribute('data-has-cover-template', Boolean(!cover && template));
+  if (!cover && template && templateIndex !== undefined) {
+    element.dataset.coverTemplate = String(templateIndex);
+  } else {
+    delete element.dataset.coverTemplate;
+  }
+  if (art) {
+    element.style.setProperty('--book-cover-art', `url("${art}")`);
   } else {
     element.style.removeProperty('--book-cover-art');
   }
@@ -2523,7 +2558,12 @@ const prepareTransitionBook = (book: Book) => {
   transitionBook.style.setProperty('--book-color', book.color);
   transitionBook.dataset.material = presentation.material;
   transitionBook.dataset.coverVariant = String(presentation.variant);
-  applyBookCoverArt(transitionBook, book.cover);
+  applyBookCoverArt(
+    transitionBook,
+    book.cover,
+    presentation.template,
+    presentation.templateIndex,
+  );
   transitionBook.classList.add('is-visible');
 };
 
@@ -2903,7 +2943,9 @@ const toBookMetadata = (book: ImportedBookRecord): ImportedBookMetadata => ({
   title: book.title,
   author: book.author,
   color: book.color,
+  ...(book.cover ? { cover: book.cover } : {}),
   chapterTitle: book.chapterTitle,
+  ...(book.sourceFormat ? { sourceFormat: book.sourceFormat } : {}),
   imported: true,
   createdAt: book.createdAt,
 });
@@ -3009,7 +3051,12 @@ const createLibraryBookCard = (book: Book, query: string) => {
   card.dataset.finished = String(finished);
   card.dataset.material = presentation.material;
   card.dataset.coverVariant = String(presentation.variant);
-  applyBookCoverArt(card, book.cover);
+  applyBookCoverArt(
+    card,
+    book.cover,
+    presentation.template,
+    presentation.templateIndex,
+  );
   card.classList.toggle('is-search-match', Boolean(query) && matched);
   card.classList.toggle('is-search-miss', Boolean(query) && !matched);
   card.toggleAttribute('inert', Boolean(query) && !matched);
@@ -3451,6 +3498,8 @@ const matchesImportedBook = async (record: ImportedBookRecord) => {
         ))
         && JSON.stringify(existing.chapters ?? []) === JSON.stringify(record.chapters)
         && JSON.stringify(existing.formats ?? []) === JSON.stringify(record.formats)
+        && existing.cover === record.cover
+        && existing.sourceFormat === record.sourceFormat
       ) {
         return true;
       }

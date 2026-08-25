@@ -9,6 +9,7 @@ export type ImportedDocumentSource = {
   markdown: boolean;
   title?: string;
   author?: string;
+  cover?: string;
 };
 
 export type ReadDocumentOptions = {
@@ -24,6 +25,8 @@ const EPUB_TEXT_TOTAL_LIMIT = 32 * 1024 * 1024;
 const EPUB_TOTAL_LIMIT = 128 * 1024 * 1024;
 const PDF_PAGE_LIMIT = 2_000;
 const EXTRACTED_TEXT_LIMIT = 12 * 1024 * 1024;
+const COVER_MAX_WIDTH = 720;
+const COVER_MAX_HEIGHT = 1_024;
 const supportedExtensions = new Set(['txt', 'md', 'markdown', 'pdf', 'epub']);
 const cjkBoundaryPattern = /[\u2e80-\u9fff\uf900-\ufaff]/u;
 
@@ -363,9 +366,82 @@ const metadataText = (document: Document, name: string) => cleanMetadata(
   localNameElements(document, name)[0]?.textContent,
 );
 
+const canvasCoverDataUrl = (canvas: HTMLCanvasElement) => (
+  canvas.toDataURL('image/jpeg', 0.86)
+);
+
+const fitCoverCanvas = (width: number, height: number) => {
+  const scale = Math.min(
+    1,
+    COVER_MAX_WIDTH / Math.max(width, 1),
+    COVER_MAX_HEIGHT / Math.max(height, 1),
+  );
+  const canvas = document.createElement('canvas');
+
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  return canvas;
+};
+
+const imageBytesToCover = async (bytes: Uint8Array, mediaType: string) => {
+  const copy = Uint8Array.from(bytes);
+  const source = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = () => (
+      typeof reader.result === 'string'
+        ? resolve(reader.result)
+        : reject(new Error('封面图片无法读取'))
+    );
+    reader.onerror = () => reject(new Error('封面图片无法读取'));
+    reader.readAsDataURL(new Blob([copy.buffer], { type: mediaType }));
+  });
+  const image = new Image();
+
+  image.decoding = 'async';
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error('封面图片无法解码'));
+    image.src = source;
+  });
+  if (!image.naturalWidth || !image.naturalHeight) {
+    return undefined;
+  }
+
+  const canvas = fitCoverCanvas(image.naturalWidth, image.naturalHeight);
+  const context = canvas.getContext('2d', { alpha: false });
+
+  if (!context) {
+    return undefined;
+  }
+  context.fillStyle = '#f7f4eb';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvasCoverDataUrl(canvas);
+};
+
+const wrapMarkdownInline = (value: string, marker: string) => {
+  const leading = value.match(/^\s*/u)?.[0] ?? '';
+  const trailing = value.match(/\s*$/u)?.[0] ?? '';
+  const content = value.slice(leading.length, value.length - trailing.length);
+
+  return content ? `${leading}${marker}${content}${marker}${trailing}` : value;
+};
+
+const markdownCodeSpan = (value: string) => {
+  const longestFence = Math.max(
+    0,
+    ...Array.from(value.matchAll(/`+/g), (match) => match[0].length),
+  );
+  const fence = '`'.repeat(longestFence + 1);
+  const padding = /^\s|\s$/u.test(value) ? ' ' : '';
+
+  return `${fence}${padding}${value}${padding}${fence}`;
+};
+
 const markdownInlineText = (node: Node): string => {
   if (node.nodeType === Node.TEXT_NODE) {
-    return node.textContent ?? '';
+    return escapeMarkdownText(node.textContent ?? '');
   }
   if (!(node instanceof Element)) {
     return '';
@@ -389,10 +465,24 @@ const markdownInlineText = (node: Node): string => {
     return '\n';
   }
   if (tag === 'img') {
-    return node.getAttribute('alt') ?? '';
+    return escapeMarkdownText(node.getAttribute('alt') ?? '');
+  }
+  if (tag === 'code' && node.parentElement?.localName.toLowerCase() !== 'pre') {
+    return markdownCodeSpan(node.textContent ?? '');
   }
 
-  return Array.from(node.childNodes).map(markdownInlineText).join('');
+  const value = Array.from(node.childNodes).map(markdownInlineText).join('');
+
+  if (tag === 'strong' || tag === 'b') {
+    return wrapMarkdownInline(value, '**');
+  }
+  if (tag === 'em' || tag === 'i') {
+    return wrapMarkdownInline(value, '*');
+  }
+  if (tag === 'del' || tag === 's' || tag === 'strike') {
+    return wrapMarkdownInline(value, '~~');
+  }
+  return value;
 };
 
 const normalizeBlockText = (value: string) => value
@@ -414,9 +504,7 @@ const markdownTable = (table: Element) => {
   const rows = localNameElements(table, 'tr').map((row) => (
     Array.from(row.children)
       .filter((cell) => ['th', 'td'].includes(cell.localName.toLowerCase()))
-      .map((cell) => escapeMarkdownText(
-        normalizeBlockText(markdownInlineText(cell)),
-      ))
+      .map((cell) => normalizeBlockText(markdownInlineText(cell)))
   )).filter((row) => row.length);
 
   if (!rows.length) {
@@ -464,7 +552,7 @@ const markdownList = (list: Element, depth = 0): string[] => {
 
     if (text) {
       lines.push(
-        `${'    '.repeat(Math.min(depth, 3))}${marker} ${escapeMarkdownText(text)}`,
+        `${'    '.repeat(Math.min(depth, 3))}${marker} ${text}`,
       );
     }
     Array.from(item.children)
@@ -517,7 +605,7 @@ const htmlToMarkdown = (source: string) => {
 
         if (text) {
           blocks.push(
-            `${'#'.repeat(Number(tag[1]))} ${escapeMarkdownText(text)}`,
+            `${'#'.repeat(Number(tag[1]))} ${text}`,
           );
         }
         return;
@@ -544,7 +632,7 @@ const htmlToMarkdown = (source: string) => {
         if (text) {
           blocks.push(
             text.split('\n')
-              .map((line) => `> ${escapeMarkdownText(line)}`)
+              .map((line) => `> ${line}`)
               .join('\n'),
           );
         }
@@ -571,7 +659,7 @@ const htmlToMarkdown = (source: string) => {
         const text = normalizeBlockText(markdownInlineText(element));
 
         if (text) {
-          blocks.push(escapeMarkdownText(text));
+          blocks.push(text);
         }
         return;
       }
@@ -587,7 +675,7 @@ const htmlToMarkdown = (source: string) => {
         const text = normalizeBlockText(markdownInlineText(element));
 
         if (text) {
-          blocks.push(escapeMarkdownText(text));
+          blocks.push(text);
         }
       }
     });
@@ -613,6 +701,161 @@ const readableNavigationMediaTypes = new Set([
   ...readableSpineMediaTypes,
   'application/x-dtbncx+xml',
 ]);
+const epubImageMediaTypes = new Set([
+  'image/avif',
+  'image/gif',
+  'image/jpeg',
+  'image/png',
+  'image/svg+xml',
+  'image/webp',
+]);
+
+const isEpubImage = (item: EpubManifestItem | undefined) => (
+  Boolean(item && epubImageMediaTypes.has(item.mediaType))
+);
+
+const findEpubCoverCandidate = (
+  packageDocument: Document,
+  packagePath: string,
+  manifest: Map<string, EpubManifestItem>,
+  archive: EpubArchive,
+) => {
+  const propertyCover = [...manifest.values()].find((item) => (
+    item.properties.split(/\s+/).includes('cover-image')
+  ));
+  if (propertyCover) {
+    return propertyCover;
+  }
+
+  const metadataCoverId = localNameElements(packageDocument, 'meta').find((item) => (
+    item.getAttribute('name')?.toLowerCase() === 'cover'
+  ))?.getAttribute('content');
+  if (metadataCoverId && manifest.has(metadataCoverId)) {
+    return manifest.get(metadataCoverId);
+  }
+
+  const guideReference = localNameElements(packageDocument, 'reference').find((item) => (
+    item.getAttribute('type')?.toLowerCase().split(/\s+/).includes('cover')
+  ))?.getAttribute('href');
+  if (guideReference) {
+    const guidePath = resolveContentEntry(archive, packagePath, guideReference);
+    const guideItem = [...manifest.values()].find((item) => item.path === guidePath);
+
+    if (guideItem) {
+      return guideItem;
+    }
+  }
+
+  return [...manifest.values()].find((item) => (
+    isEpubImage(item)
+    && /(?:^|[/_.-])cover(?:[/_.-]|$)/i.test(`${item.id}/${item.path}`)
+  ));
+};
+
+const findEpubCoverImage = (
+  candidate: EpubManifestItem | undefined,
+  entries: Map<string, Uint8Array>,
+  manifest: Map<string, EpubManifestItem>,
+  archive: EpubArchive,
+) => {
+  if (!candidate || isEpubImage(candidate)) {
+    return candidate;
+  }
+  if (!readableSpineMediaTypes.has(candidate.mediaType)) {
+    return undefined;
+  }
+
+  const bytes = entries.get(candidate.path);
+  if (!bytes) {
+    return undefined;
+  }
+  const source = decodeMarkup(bytes);
+  const document = new DOMParser().parseFromString(source, 'text/html');
+  const image = localNameElements(document, 'img')[0]
+    ?? localNameElements(document, 'image')[0];
+  const reference = image?.getAttribute('src')
+    ?? image?.getAttribute('href')
+    ?? image?.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
+
+  if (!reference) {
+    return undefined;
+  }
+
+  try {
+    const path = resolveContentEntry(archive, candidate.path, reference);
+
+    return [...manifest.values()].find((item) => (
+      item.path === path && isEpubImage(item)
+    ));
+  } catch {
+    return undefined;
+  }
+};
+
+const readEpubCover = async (
+  bytes: Uint8Array,
+  archive: EpubArchive,
+  entries: Map<string, Uint8Array>,
+  manifest: Map<string, EpubManifestItem>,
+  candidate: EpubManifestItem | undefined,
+  encrypted: Set<string>,
+) => {
+  const image = findEpubCoverImage(candidate, entries, manifest, archive);
+
+  if (!image || encrypted.has(image.path)) {
+    return undefined;
+  }
+  const imageBytes = entries.get(image.path)
+    ?? extractEpubEntries(bytes, archive, new Set([image.path])).get(image.path);
+
+  if (!imageBytes) {
+    return undefined;
+  }
+  return imageBytesToCover(imageBytes, image.mediaType).catch((): undefined => undefined);
+};
+
+const contentsLabelPattern = /^(?:目录|目次|目录页|contents|table\s+of\s+contents)$/iu;
+
+const looksLikeEpubContentsDocument = (source: string, item: EpubManifestItem) => {
+  let document = new DOMParser().parseFromString(source, 'application/xhtml+xml');
+  if (document.getElementsByTagName('parsererror').length) {
+    document = new DOMParser().parseFromString(source, 'text/html');
+  }
+
+  const body = localNameElements(document, 'body')[0] ?? document.documentElement;
+  const anchors = localNameElements(body, 'a').filter((anchor) => (
+    Boolean(anchor.getAttribute('href') && cleanMetadata(anchor.textContent))
+  ));
+  const semanticToc = localNameElements(body, 'nav').some((navigation) => {
+    const type = navigation.getAttribute('epub:type')
+      ?? navigation.getAttribute('type')
+      ?? '';
+
+    return type.toLowerCase().split(/\s+/).includes('toc');
+  });
+  const labels = [
+    localNameElements(document, 'title')[0]?.textContent,
+    ...['h1', 'h2', 'h3'].flatMap((tag) => (
+      localNameElements(body, tag).slice(0, 2).map((heading) => heading.textContent)
+    )),
+  ].map(cleanMetadata).filter(Boolean);
+  const labelledAsContents = labels.some((label) => contentsLabelPattern.test(label));
+  const pathSuggestsContents = /(?:^|[/_.-])(?:toc|contents|nav)(?:[/_.-]|$)/i
+    .test(`${item.id}/${item.path}`);
+  const bodyLength = cleanMetadata(body.textContent).length;
+  const linkedLength = anchors.reduce(
+    (length, anchor) => length + cleanMetadata(anchor.textContent).length,
+    0,
+  );
+
+  return semanticToc
+    || (labelledAsContents && anchors.length >= 2)
+    || (
+      pathSuggestsContents
+      && anchors.length >= 4
+      && linkedLength >= Math.max(24, bodyLength * 0.34)
+    );
+};
 
 const resolveManifestItem = (
   manifest: Map<string, EpubManifestItem>,
@@ -797,6 +1040,12 @@ const readEpub = async (
       fallbackId: item.getAttribute('fallback') ?? undefined,
     });
   });
+  const coverCandidate = findEpubCoverCandidate(
+    packageDocument,
+    packagePath,
+    manifest,
+    archive,
+  );
 
   const spineElement = localNameElements(packageDocument, 'spine')[0];
   if (!spineElement) {
@@ -853,12 +1102,25 @@ const readEpub = async (
     packagePath,
     ...spine.map((item) => item.path),
     ...navigationItems.map((item) => item.path),
+    ...(
+      coverCandidate && !encrypted.has(coverCandidate.path)
+        ? [coverCandidate.path]
+        : []
+    ),
   ]);
   const entries = extractEpubEntries(bytes, archive, requiredPaths);
   const navigationTitles = readEpubNavigation(
     entries,
     navigationItems,
     archive,
+  );
+  const cover = await readEpubCover(
+    bytes,
+    archive,
+    entries,
+    manifest,
+    coverCandidate,
+    encrypted,
   );
   const sections: string[] = [`# ${escapeMarkdownText(title)}`];
 
@@ -869,9 +1131,19 @@ const readEpub = async (
       throw new Error(`EPUB 第 ${index + 1} 章缺少正文文件：${item.path}`);
     }
 
-    const markdown = htmlToMarkdown(decodeMarkup(chapterBytes));
+    const chapterSource = decodeMarkup(chapterBytes);
+    if (
+      navigationIds.has(item.id)
+      || looksLikeEpubContentsDocument(chapterSource, item)
+    ) {
+      onProgress?.(0.2 + (index + 1) / spine.length * 0.75);
+      continue;
+    }
+
+    const markdown = htmlToMarkdown(chapterSource);
     if (!markdown) {
-      throw new Error(`EPUB 第 ${index + 1} 章没有可阅读的文字：${item.path}`);
+      onProgress?.(0.2 + (index + 1) / spine.length * 0.75);
+      continue;
     }
 
     const navigationTitle = navigationTitles.get(item.path);
@@ -894,11 +1166,18 @@ const readEpub = async (
   }
 
   onProgress?.(1);
-  return { source, markdown: true, title, author: author || undefined };
+  return {
+    source,
+    markdown: true,
+    title,
+    author: author || undefined,
+    ...(cover ? { cover } : {}),
+  };
 };
 
 type PdfLine = {
   text: string;
+  x: number;
   y: number;
   height: number;
   right: number;
@@ -920,7 +1199,31 @@ const needsPdfSpace = (left: string, right: string, gap: number, height: number)
   && !/^[,.;:!?，。；：！？、）》】]/u.test(right)
 );
 
-const pdfPageText = async (document: PDFDocumentProxy, pageNumber: number) => {
+const comparablePdfText = (value: string) => cleanMetadata(value)
+  .normalize('NFKC')
+  .replace(/[\s:：·•.。_-]+/gu, '')
+  .toLowerCase();
+
+const pdfHeadingPattern = new RegExp(
+  String.raw`^(?:第[\p{Script=Han}〇零一二三四五六七八九十百千万\d]+[章节回部卷篇]`
+    + String.raw`|(?:chapter|part)\s+\d+\b`
+    + String.raw`|\d+(?:\.\d+){1,4}\s*\S)`,
+  'iu',
+);
+const pdfOrderedListPattern = /^(\d{1,6})[.)、]\s*(.+)$/u;
+const pdfBulletListPattern = /^(?:[-+*]\s+|•\s*)(.+)$/u;
+const pdfTerminalPattern = /[。！？!?；;…][”’"'）》】〕」』]*$/u;
+
+type PdfPageText = {
+  markdown: string;
+  lines: string[];
+};
+
+const pdfPageText = async (
+  document: PDFDocumentProxy,
+  pageNumber: number,
+  outlineTitles: readonly string[],
+): Promise<PdfPageText> => {
   const page = await document.getPage(pageNumber);
 
   try {
@@ -953,7 +1256,7 @@ const pdfPageText = async (document: PDFDocumentProxy, pageNumber: number) => {
         || x < current.right - Math.max(height, current.height);
 
       if (startsNewLine) {
-        current = { text, y, height, right: x + Math.abs(textItem.width) };
+        current = { text, x, y, height, right: x + Math.abs(textItem.width) };
         lines.push(current);
       } else {
         current.text += needsPdfSpace(current.text, text, x - current.right, height)
@@ -969,37 +1272,140 @@ const pdfPageText = async (document: PDFDocumentProxy, pageNumber: number) => {
     });
 
     if (!lines.length) {
-      return '';
+      return { markdown: '', lines: [] };
     }
 
+    const originalLines = lines.map((line) => line.text);
     const heights = lines.map((line) => line.height).sort(
       (left, right) => left - right,
     );
     const medianHeight = heights[Math.floor(heights.length / 2)] ?? 1;
-    const paragraphs: string[] = [];
+    const knownHeadings = new Set(outlineTitles.map(comparablePdfText));
+    const contentLines = lines.filter((line, index) => {
+      const atPageEdge = index < 2 || index >= lines.length - 2;
+
+      return !(atPageEdge && /^(?:\d{1,5}|[ivxlcdm]{1,10})$/i.test(line.text));
+    });
+    const leftEdge = Math.min(...contentLines.map((line) => line.x));
+    const blocks: string[] = [];
     let paragraph = '';
 
-    lines.forEach((line, index) => {
-      const previous = lines[index - 1];
+    const flushParagraph = () => {
+      if (paragraph) {
+        blocks.push(escapeMarkdownText(paragraph));
+        paragraph = '';
+      }
+    };
+
+    contentLines.forEach((line, index) => {
+      const previous = contentLines[index - 1];
       const verticalGap = previous ? Math.abs(previous.y - line.y) : 0;
+      const comparable = comparablePdfText(line.text);
+      if (knownHeadings.has(comparable)) {
+        flushParagraph();
+        return;
+      }
+
+      const heading = line.text.length <= 96
+        && pdfHeadingPattern.test(line.text)
+        && line.height >= medianHeight * 1.04;
+      if (heading) {
+        flushParagraph();
+        const headingLevel = Math.min(
+          4,
+          Math.max(2, (line.text.match(/\./g)?.length ?? 0) + 1),
+        );
+
+        blocks.push(`${'#'.repeat(headingLevel)} ${escapeMarkdownText(line.text)}`);
+        return;
+      }
+
+      const orderedList = line.text.match(pdfOrderedListPattern);
+      const bulletList = line.text.match(pdfBulletListPattern);
+      if (orderedList || bulletList) {
+        flushParagraph();
+        blocks.push(orderedList
+          ? `${Number(orderedList[1])}. ${escapeMarkdownText(orderedList[2])}`
+          : `- ${escapeMarkdownText(bulletList?.[1] ?? '')}`);
+        return;
+      }
+
+      const startsIndentedParagraph = Boolean(
+        previous
+        && line.x > leftEdge + medianHeight * 0.72
+        && pdfTerminalPattern.test(previous.text)
+      );
       const startsBlock = Boolean(
         previous
         && (
-          verticalGap > Math.max(previous.height, line.height, medianHeight) * 1.65
-          || /^(?:[-+*]|\d{1,9}[.)])\s+/.test(line.text)
+          verticalGap > Math.max(previous.height, line.height, medianHeight) * 2.25
+          || startsIndentedParagraph
         )
       );
 
       if (startsBlock && paragraph) {
-        paragraphs.push(paragraph);
-        paragraph = '';
+        flushParagraph();
       }
       paragraph = joinTextLines(paragraph, line.text);
     });
-    if (paragraph) {
-      paragraphs.push(paragraph);
+    flushParagraph();
+    return { markdown: blocks.join('\n\n'), lines: originalLines };
+  } finally {
+    page.cleanup();
+  }
+};
+
+const looksLikePdfContentsPage = (
+  lines: readonly string[],
+  continuation = false,
+) => {
+  const cleaned = lines.map((line) => cleanMetadata(line).normalize('NFKC')).filter(Boolean);
+  const labelled = cleaned.slice(0, 8).some((line) => contentsLabelPattern.test(line));
+  const entries = cleaned.filter((line) => (
+    /(?:\.{2,}|…{2,}|·{2,}|\s)\s*\d{1,4}$/u.test(line)
+    || /^(?:第.+[章节回部卷篇]|\d+(?:\.\d+)+|chapter\s+\d+).+\s\d{1,4}$/iu.test(line)
+  )).length;
+
+  return labelled
+    ? entries >= 2 || cleaned.length >= 6
+    : continuation && entries >= 5;
+};
+
+const looksLikePdfCoverPage = (
+  lines: readonly string[],
+  title: string,
+) => {
+  const cleaned = lines.map(cleanMetadata).filter(Boolean);
+  const titleKey = comparablePdfText(title);
+  const totalLength = cleaned.reduce((length, line) => length + line.length, 0);
+
+  return cleaned.length <= 8
+    && totalLength <= 220
+    && cleaned.some((line) => comparablePdfText(line).includes(titleKey));
+};
+
+const renderPdfCover = async (pdfDocument: PDFDocumentProxy) => {
+  const page = await pdfDocument.getPage(1);
+
+  try {
+    const naturalViewport = page.getViewport({ scale: 1 });
+    const scale = Math.min(
+      COVER_MAX_WIDTH / Math.max(naturalViewport.width, 1),
+      COVER_MAX_HEIGHT / Math.max(naturalViewport.height, 1),
+    );
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d', { alpha: false });
+
+    canvas.width = Math.max(1, Math.round(viewport.width));
+    canvas.height = Math.max(1, Math.round(viewport.height));
+    if (!context) {
+      return undefined;
     }
-    return paragraphs.map(escapeMarkdownText).join('\n\n');
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvas, canvasContext: context, viewport }).promise;
+    return canvasCoverDataUrl(canvas);
   } finally {
     page.cleanup();
   }
@@ -1095,18 +1501,41 @@ const readPdf = async (
       || cleanMetadata(xmpTitle)
       || fileTitleOf(file.name);
     const author = cleanMetadata(info?.Author) || cleanMetadata(xmpAuthor);
-    const headings = await pdfOutline(document);
+    const [headings, cover] = await Promise.all([
+      pdfOutline(document),
+      renderPdfCover(document).catch((): undefined => undefined),
+    ]);
     const sections: string[] = [`# ${escapeMarkdownText(title)}`];
     let extractedLength = sections[0].length;
+    let skippingContents = false;
+    const contentsPageLimit = Math.min(
+      20,
+      Math.max(6, Math.ceil(document.numPages * 0.08)),
+    );
 
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
       const pageHeadings = headings.get(pageNumber - 1) ?? [];
-      const text = await pdfPageText(document, pageNumber);
+      const pageText = await pdfPageText(
+        document,
+        pageNumber,
+        pageHeadings.map((heading) => heading.title),
+      );
+      const coverPage = pageNumber === 1
+        && looksLikePdfCoverPage(pageText.lines, title);
+      const contentsPage: boolean = pageNumber <= contentsPageLimit
+        && looksLikePdfContentsPage(pageText.lines, skippingContents);
+
+      if (coverPage || contentsPage) {
+        skippingContents = contentsPage;
+        onProgress?.(0.1 + pageNumber / document.numPages * 0.88);
+        continue;
+      }
+      skippingContents = false;
       const section = [
         ...pageHeadings.map((heading) => (
           `${'#'.repeat(heading.level)} ${escapeMarkdownText(heading.title)}`
         )),
-        text,
+        pageText.markdown,
       ].filter(Boolean).join('\n\n');
 
       if (section) {
@@ -1129,6 +1558,7 @@ const readPdf = async (
       markdown: true,
       title,
       author: author || undefined,
+      ...(cover ? { cover } : {}),
     };
   } catch (error) {
     if (error instanceof Error && (
