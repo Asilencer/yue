@@ -79,6 +79,13 @@ export type ImportedBookFormat =
       paragraphIndex: number;
     };
 
+export type ImportedPdfDocument = {
+  file: Blob;
+  fingerprint: string;
+  pageCount: number;
+  pageNumbers: number[];
+};
+
 export type ImportedBookRecord = {
   id: string;
   title: string;
@@ -89,6 +96,8 @@ export type ImportedBookRecord = {
   paragraphs: string[];
   chapters: ImportedBookChapter[];
   formats: ImportedBookFormat[];
+  pdf?: ImportedPdfDocument;
+  sourceName?: string;
   sourceFormat?: ImportedSourceFormat;
   imported: true;
   createdAt: number;
@@ -96,7 +105,7 @@ export type ImportedBookRecord = {
 
 export type ImportedBookMetadata = Omit<
   ImportedBookRecord,
-  'paragraphs' | 'chapters' | 'formats'
+  'paragraphs' | 'chapters' | 'formats' | 'pdf'
 >;
 
 export type ParseImportedBookOptions = {
@@ -113,6 +122,30 @@ const SCHEMA_VERSION = 2;
 const COVER_DATA_URL_LIMIT = 3 * 1024 * 1024;
 const coverColors = ['#5276c7', '#5c7f70', '#ef8b74', '#c99a52', '#6b657f'];
 
+const normalizeWereadCoverUrl = (value: unknown) => {
+  if (typeof value !== 'string' || value.length > 2_048) {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(value);
+
+    return url.protocol === 'https:' && url.hostname === 'cdn.weread.qq.com'
+      ? url.href
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const isStoredCover = (value: string) => (
+  (
+    value.length <= COVER_DATA_URL_LIMIT
+    && /^data:image\/jpeg;base64,[a-z\d+/]+=*$/i.test(value)
+  )
+  || normalizeWereadCoverUrl(value) === value
+);
+
 type StoredBookMetadata = ImportedBookMetadata & {
   schemaVersion: typeof SCHEMA_VERSION;
 };
@@ -122,6 +155,7 @@ type StoredBookContent = {
   paragraphs: string[];
   chapters: ImportedBookChapter[];
   formats: ImportedBookFormat[];
+  pdf?: ImportedPdfDocument;
   schemaVersion: typeof SCHEMA_VERSION;
 };
 
@@ -384,6 +418,7 @@ const readBookMetadata = (value: unknown): ImportedBookMetadata | null => {
     color,
     cover,
     chapterTitle,
+    sourceName,
     sourceFormat,
     imported,
     createdAt,
@@ -399,11 +434,14 @@ const readBookMetadata = (value: unknown): ImportedBookMetadata | null => {
       cover !== undefined
       && (
         typeof cover !== 'string'
-        || cover.length > COVER_DATA_URL_LIMIT
-        || !/^data:image\/jpeg;base64,[a-z\d+/]+=*$/i.test(cover)
+        || !isStoredCover(cover)
       )
     )
     || typeof chapterTitle !== 'string'
+    || (
+      sourceName !== undefined
+      && (typeof sourceName !== 'string' || !sourceName || sourceName.length > 512)
+    )
     || (
       sourceFormat !== undefined
       && sourceFormat !== 'markdown'
@@ -430,9 +468,54 @@ const readBookMetadata = (value: unknown): ImportedBookMetadata | null => {
     color,
     ...(typeof cover === 'string' ? { cover } : {}),
     chapterTitle,
+    ...(typeof sourceName === 'string' ? { sourceName } : {}),
     ...(normalizedSourceFormat ? { sourceFormat: normalizedSourceFormat } : {}),
     imported,
     createdAt,
+  };
+};
+
+const readPdfDocument = (value: unknown): ImportedPdfDocument | null | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const {
+    file,
+    fingerprint,
+    pageCount,
+    pageNumbers,
+  } = value;
+  if (
+    !(file instanceof Blob)
+    || file.size === 0
+    || (file.type && file.type !== 'application/pdf')
+    || typeof fingerprint !== 'string'
+    || !fingerprint
+    || typeof pageCount !== 'number'
+    || !Number.isInteger(pageCount)
+    || pageCount < 1
+    || !Array.isArray(pageNumbers)
+    || !pageNumbers.length
+    || pageNumbers.some((pageNumber, index) => (
+      typeof pageNumber !== 'number'
+      || !Number.isInteger(pageNumber)
+      || pageNumber < 1
+      || pageNumber > pageCount
+      || (index > 0 && pageNumber <= pageNumbers[index - 1])
+    ))
+  ) {
+    return null;
+  }
+
+  return {
+    file,
+    fingerprint,
+    pageCount,
+    pageNumbers: [...pageNumbers],
   };
 };
 
@@ -454,11 +537,23 @@ const readImportedBook = (value: unknown): ImportedBookRecord | null => {
 
   const chapters = readBookChapters(value.chapters, paragraphs.length);
   const formats = readBookFormats(value.formats, paragraphs);
-  if (!chapters || !formats) {
+  const pdf = readPdfDocument(value.pdf);
+  if (
+    !chapters
+    || !formats
+    || pdf === null
+    || (pdf && metadata.sourceFormat !== 'pdf')
+  ) {
     return null;
   }
 
-  return { ...metadata, paragraphs, chapters, formats };
+  return {
+    ...metadata,
+    paragraphs,
+    chapters,
+    formats,
+    ...(pdf ? { pdf } : {}),
+  };
 };
 
 const readStoredMetadata = (value: unknown): ImportedBookMetadata | null => {
@@ -486,7 +581,8 @@ const readStoredContent = (value: unknown): StoredBookContent | null => {
 
   const chapters = readBookChapters(value.chapters, value.paragraphs.length);
   const formats = readBookFormats(value.formats, value.paragraphs);
-  if (!chapters || !formats) {
+  const pdf = readPdfDocument(value.pdf);
+  if (!chapters || !formats || pdf === null) {
     return null;
   }
 
@@ -495,6 +591,7 @@ const readStoredContent = (value: unknown): StoredBookContent | null => {
     paragraphs: value.paragraphs,
     chapters,
     formats,
+    ...(pdf ? { pdf } : {}),
     schemaVersion: SCHEMA_VERSION,
   };
 };
@@ -506,6 +603,7 @@ const toStoredMetadata = (book: ImportedBookRecord): StoredBookMetadata => ({
   color: book.color,
   ...(book.cover ? { cover: book.cover } : {}),
   chapterTitle: book.chapterTitle,
+  ...(book.sourceName ? { sourceName: book.sourceName } : {}),
   ...(book.sourceFormat ? { sourceFormat: book.sourceFormat } : {}),
   imported: true,
   createdAt: book.createdAt,
@@ -517,6 +615,7 @@ const toStoredContent = (book: ImportedBookRecord): StoredBookContent => ({
   paragraphs: book.paragraphs,
   chapters: book.chapters,
   formats: book.formats,
+  ...(book.pdf ? { pdf: book.pdf } : {}),
   schemaVersion: SCHEMA_VERSION,
 });
 
@@ -761,12 +860,16 @@ const yamlFrontMatterKeys = new Set([
   'lang',
   'description',
   'tags',
+  'doc_type',
+  'cover',
 ]);
 
 type MarkdownFrontMatter = {
   source: string;
   title?: string;
   author?: string;
+  cover?: string;
+  docType?: string;
 };
 
 const readConservativeYamlFrontMatter = (source: string): MarkdownFrontMatter => {
@@ -830,7 +933,28 @@ const readConservativeYamlFrontMatter = (source: string): MarkdownFrontMatter =>
     source: contentLines.join('\n'),
     title: readText('title'),
     author: readText('author') ?? readText('creator'),
+    cover: readText('cover'),
+    docType: readText('doc_type'),
   };
+};
+
+const cleanWereadMarkdown = (source: string) => {
+  let cleaned = source.replace(
+    /^#\s+元数据\s*$[\s\S]*?(?=^#\s+(?:高亮划线|读书笔记|本书评论)\s*$)/mu,
+    '',
+  )
+  .replace(/^#\s+高亮划线\s*$/gmu, '')
+  .replace(/^>\s*⏱.*$/gmu, '')
+  .replace(/\n{3,}/g, '\n\n')
+  .trim();
+
+  while (/(?:^|\n)#\s+(?:读书笔记|本书评论)\s*$/u.test(cleaned)) {
+    cleaned = cleaned.replace(
+      /(?:^|\n)#\s+(?:读书笔记|本书评论)\s*$/u,
+      '',
+    ).trim();
+  }
+  return cleaned;
 };
 
 const parseMarkdownContent = (tree: Root, title: string) => {
@@ -1374,7 +1498,9 @@ export const parseImportedBook = async (
   const markdownDocument: MarkdownFrontMatter = document.markdown
     ? readConservativeYamlFrontMatter(document.source)
     : { source: document.source };
-  const cleaned = markdownDocument.source;
+  const cleaned = markdownDocument.docType === 'weread-highlights-reviews'
+    ? cleanWereadMarkdown(markdownDocument.source)
+    : markdownDocument.source;
   const markdownTree = document.markdown ? parseMarkdownAst(cleaned) : undefined;
   const markdownTitle = markdownTree ? findMarkdownTitle(markdownTree) : undefined;
   const fileTitle = file.name.replace(/\.(?:txt|md|markdown|pdf|epub)$/i, '').trim();
@@ -1388,11 +1514,33 @@ export const parseImportedBook = async (
     ),
     48,
   );
-  const parsedContent = stripImportedContents(
-    markdownTree
-      ? parseMarkdownContent(markdownTree, title)
-      : parsePlainTextContent(cleaned, title),
-  );
+  const parsedContent = document.pdf
+    ? {
+        paragraphs: document.pdf.pageNumbers.map((pageNumber) => `第 ${pageNumber} 页`),
+        chapters: document.pdf.outline.flatMap((chapter, index, outline) => {
+          const paragraphIndex = document.pdf?.pageNumbers.findIndex(
+            (pageNumber) => pageNumber >= chapter.pageNumber,
+          ) ?? -1;
+          const duplicate = outline.slice(0, index).some((candidate) => (
+            candidate.title === chapter.title
+            && candidate.pageNumber === chapter.pageNumber
+          ));
+
+          return paragraphIndex >= 0 && !duplicate
+            ? [{
+                title: chapter.title,
+                level: chapter.level,
+                paragraphIndex,
+              }]
+            : [];
+        }),
+        formats: [],
+      }
+    : stripImportedContents(
+        markdownTree
+          ? parseMarkdownContent(markdownTree, title)
+          : parsePlainTextContent(cleaned, title),
+      );
   const { paragraphs, chapters, formats } = parsedContent;
   options.onProgress?.(0.84);
 
@@ -1400,8 +1548,12 @@ export const parseImportedBook = async (
     throw new Error('文件中没有可阅读的正文');
   }
 
-  const id = await createBookId(title, document.source);
+  const id = await createBookId(
+    title,
+    document.pdf?.fingerprint ?? document.source,
+  );
   options.onProgress?.(1);
+  const cover = document.cover ?? normalizeWereadCoverUrl(markdownDocument.cover);
 
   return {
     id,
@@ -1411,11 +1563,20 @@ export const parseImportedBook = async (
       48,
     ),
     color: coverColors[hashTitle(title) % coverColors.length],
-    ...(document.cover ? { cover: document.cover } : {}),
+    ...(cover ? { cover } : {}),
     chapterTitle: title,
+    sourceName: truncateUnicode(file.name, 512),
     paragraphs,
     chapters,
     formats,
+    ...(document.pdf ? {
+      pdf: {
+        file: document.pdf.file,
+        fingerprint: document.pdf.fingerprint,
+        pageCount: document.pdf.pageCount,
+        pageNumbers: document.pdf.pageNumbers,
+      },
+    } : {}),
     sourceFormat: file.name.toLowerCase().endsWith('.txt')
       ? 'txt'
       : file.name.toLowerCase().endsWith('.pdf')
@@ -1498,6 +1659,7 @@ export const loadImportedBooks = async (): Promise<ImportedBookRecord[]> => {
               paragraphs: content.paragraphs,
               chapters: content.chapters,
               formats: content.formats,
+              ...(content.pdf ? { pdf: content.pdf } : {}),
             }]
           : [];
       });
@@ -1545,6 +1707,7 @@ export const loadImportedBook = async (id: string): Promise<ImportedBookRecord> 
       paragraphs: content.paragraphs,
       chapters: content.chapters,
       formats: content.formats,
+      ...(content.pdf ? { pdf: content.pdf } : {}),
     };
   } finally {
     database.close();
@@ -1637,6 +1800,7 @@ export const deleteImportedBook = async (id: string): Promise<ImportedBookRecord
           paragraphs: content.paragraphs,
           chapters: content.chapters,
           formats: content.formats,
+          ...(content.pdf ? { pdf: content.pdf } : {}),
         };
         metadataStore.delete(id);
         contentStore.delete(id);

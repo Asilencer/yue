@@ -10,21 +10,23 @@ export type ImportedDocumentSource = {
   title?: string;
   author?: string;
   cover?: string;
+  pdf?: {
+    file: Blob;
+    fingerprint: string;
+    pageCount: number;
+    pageNumbers: number[];
+    outline: Array<{
+      title: string;
+      level: 1 | 2 | 3;
+      pageNumber: number;
+    }>;
+  };
 };
 
 export type ReadDocumentOptions = {
   onProgress?: (progress: number) => void;
 };
 
-const TEXT_SIZE_LIMIT = 2 * 1024 * 1024;
-const EPUB_SIZE_LIMIT = 32 * 1024 * 1024;
-const PDF_SIZE_LIMIT = 64 * 1024 * 1024;
-const EPUB_ENTRY_LIMIT = 2_048;
-const EPUB_ENTRY_SIZE_LIMIT = 8 * 1024 * 1024;
-const EPUB_TEXT_TOTAL_LIMIT = 32 * 1024 * 1024;
-const EPUB_TOTAL_LIMIT = 128 * 1024 * 1024;
-const PDF_PAGE_LIMIT = 2_000;
-const EXTRACTED_TEXT_LIMIT = 12 * 1024 * 1024;
 const COVER_MAX_WIDTH = 720;
 const COVER_MAX_HEIGHT = 1_024;
 const supportedExtensions = new Set(['txt', 'md', 'markdown', 'pdf', 'epub']);
@@ -154,18 +156,6 @@ const joinTextLines = (left: string, right: string) => {
   return `${left}${separator}${right}`;
 };
 
-const assertFileSize = (file: File, extension: string) => {
-  const sizeLimit = extension === 'pdf'
-    ? PDF_SIZE_LIMIT
-    : extension === 'epub'
-      ? EPUB_SIZE_LIMIT
-      : TEXT_SIZE_LIMIT;
-
-  if (file.size > sizeLimit) {
-    throw new Error(`单本 ${extension.toUpperCase()} 文件暂时不能超过 ${sizeLimit / 1024 / 1024} MB`);
-  }
-};
-
 const parseXml = (source: string, description: string) => {
   if (/<!ENTITY\b/i.test(source)) {
     throw new Error(`${description} 包含不支持的实体声明`);
@@ -248,17 +238,10 @@ const contentReferencePaths = (basePath: string, reference: string) => {
   return [...new Set([decodedPath, rawPath])];
 };
 
-type EpubArchiveEntry = {
-  path: string;
-  size: number;
-};
-
-type EpubArchive = Map<string, EpubArchiveEntry>;
+type EpubArchive = Set<string>;
 
 const inspectEpubArchive = (bytes: Uint8Array): EpubArchive => {
-  let entryCount = 0;
-  let totalSize = 0;
-  const archive: EpubArchive = new Map();
+  const archive: EpubArchive = new Set();
 
   if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
     throw new Error('文件不是有效的 EPUB 压缩包');
@@ -267,24 +250,18 @@ const inspectEpubArchive = (bytes: Uint8Array): EpubArchive => {
   try {
     unzipSync(bytes, {
       filter: (entry) => {
-        entryCount += 1;
         if (
           !Number.isSafeInteger(entry.originalSize)
           || entry.originalSize < 0
         ) {
           throw new Error('EPUB 包含无效的文件大小');
         }
-        totalSize += entry.originalSize;
-
-        if (entryCount > EPUB_ENTRY_LIMIT || totalSize > EPUB_TOTAL_LIMIT) {
-          throw new Error('EPUB 解压后的内容过大');
-        }
 
         const path = zipEntryPath(entry.name);
         if (archive.has(path)) {
           throw new Error('EPUB 包含重复的文件路径');
         }
-        archive.set(path, { path, size: entry.originalSize });
+        archive.add(path);
         return false;
       },
     });
@@ -316,20 +293,9 @@ const extractEpubEntries = (
   archive: EpubArchive,
   requestedPaths: Set<string>,
 ) => {
-  let selectedSize = 0;
-
   requestedPaths.forEach((path) => {
-    const entry = archive.get(path);
-
-    if (!entry) {
+    if (!archive.has(path)) {
       throw new Error(`EPUB 缺少文件：${path}`);
-    }
-    selectedSize += entry.size;
-    if (
-      entry.size > EPUB_ENTRY_SIZE_LIMIT
-      || selectedSize > EPUB_TEXT_TOTAL_LIMIT
-    ) {
-      throw new Error('EPUB 中的单个章节或正文总量过大');
     }
   });
 
@@ -1158,9 +1124,6 @@ const readEpub = async (
   }
 
   const source = sections.join('\n\n');
-  if (source.length > EXTRACTED_TEXT_LIMIT) {
-    throw new Error('EPUB 提取后的正文过大');
-  }
   if (sections.length === 1) {
     throw new Error('EPUB 中没有可阅读的正文');
   }
@@ -1364,11 +1327,13 @@ const looksLikePdfContentsPage = (
   const entries = cleaned.filter((line) => (
     /(?:\.{2,}|…{2,}|·{2,}|\s)\s*\d{1,4}$/u.test(line)
     || /^(?:第.+[章节回部卷篇]|\d+(?:\.\d+)+|chapter\s+\d+).+\s\d{1,4}$/iu.test(line)
+    || /^\d+(?:\.\d+){1,4}\s*\S+/u.test(line)
+    || /^\d{1,4}[.)、]?\s+(?:第.+[章节回部卷篇]|\d+(?:\.\d+){1,4}\s*\S+)/iu.test(line)
   )).length;
 
   return labelled
     ? entries >= 2 || cleaned.length >= 6
-    : continuation && entries >= 5;
+    : entries >= 6 || (continuation && entries >= 5);
 };
 
 const looksLikePdfCoverPage = (
@@ -1418,7 +1383,10 @@ type PdfOutlineNode = {
 };
 
 const pdfOutline = async (document: PDFDocumentProxy) => {
-  const headings = new Map<number, Array<{ title: string; level: number }>>();
+  const headings = new Map<
+    number,
+    Array<{ title: string; level: 1 | 2 | 3 }>
+  >();
   const outline = await document.getOutline()
     .catch((): null => null) as PdfOutlineNode[] | null;
   let count = 0;
@@ -1453,7 +1421,10 @@ const pdfOutline = async (document: PDFDocumentProxy) => {
       if (pageIndex !== undefined && title) {
         const pageHeadings = headings.get(pageIndex) ?? [];
 
-        pageHeadings.push({ title, level: Math.min(3, Math.max(1, level)) });
+        pageHeadings.push({
+          title,
+          level: Math.min(3, Math.max(1, level)) as 1 | 2 | 3,
+        });
         headings.set(pageIndex, pageHeadings);
       }
       if (node.items?.length) {
@@ -1466,6 +1437,35 @@ const pdfOutline = async (document: PDFDocumentProxy) => {
     await visit(outline, 1);
   }
   return headings;
+};
+
+const pdfOutlineContentsPages = (
+  headings: ReadonlyMap<number, Array<{ title: string }>>,
+) => {
+  const outlinedPages = [...headings.entries()].sort(
+    ([leftPage], [rightPage]) => leftPage - rightPage,
+  );
+  const contentsIndex = outlinedPages.findIndex(([, pageHeadings]) => (
+    pageHeadings.some((heading) => contentsLabelPattern.test(heading.title))
+  ));
+
+  if (contentsIndex < 0) {
+    return new Set<number>();
+  }
+  const startPageNumber = outlinedPages[contentsIndex][0] + 1;
+  const nextContentPage = outlinedPages.slice(contentsIndex + 1).find(
+    ([, pageHeadings]) => pageHeadings.some(
+      (heading) => !contentsLabelPattern.test(heading.title),
+    ),
+  );
+  const endPageNumber = nextContentPage?.[0] !== undefined
+    ? nextContentPage[0] + 1
+    : startPageNumber + 1;
+
+  return new Set(Array.from(
+    { length: Math.max(0, endPageNumber - startPageNumber) },
+    (_, index) => startPageNumber + index,
+  ));
 };
 
 const readPdf = async (
@@ -1488,10 +1488,6 @@ const readPdf = async (
 
   try {
     document = await loadingTask.promise;
-    if (document.numPages > PDF_PAGE_LIMIT) {
-      throw new Error(`PDF 页数暂时不能超过 ${PDF_PAGE_LIMIT} 页`);
-    }
-
     onProgress?.(0.08);
     const metadata = await document.getMetadata().catch((): null => null);
     const info = metadata?.info as Record<string, unknown> | undefined;
@@ -1506,11 +1502,13 @@ const readPdf = async (
       renderPdfCover(document).catch((): undefined => undefined),
     ]);
     const sections: string[] = [`# ${escapeMarkdownText(title)}`];
-    let extractedLength = sections[0].length;
     let skippingContents = false;
+    let meaningfulTextPages = 0;
+    const skippedPageNumbers = new Set<number>();
+    const outlineContentsPages = pdfOutlineContentsPages(headings);
     const contentsPageLimit = Math.min(
-      20,
-      Math.max(6, Math.ceil(document.numPages * 0.08)),
+      120,
+      Math.max(8, Math.ceil(document.numPages * 0.12)),
     );
 
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
@@ -1523,9 +1521,18 @@ const readPdf = async (
       const coverPage = pageNumber === 1
         && looksLikePdfCoverPage(pageText.lines, title);
       const contentsPage: boolean = pageNumber <= contentsPageLimit
-        && looksLikePdfContentsPage(pageText.lines, skippingContents);
+        && (
+          outlineContentsPages.has(pageNumber)
+          || looksLikePdfContentsPage(pageText.lines, skippingContents)
+        );
+      const pageTextLength = cleanMetadata(pageText.lines.join('')).length;
+
+      if (pageTextLength >= 80) {
+        meaningfulTextPages += 1;
+      }
 
       if (coverPage || contentsPage) {
+        skippedPageNumbers.add(pageNumber);
         skippingContents = contentsPage;
         onProgress?.(0.1 + pageNumber / document.numPages * 0.88);
         continue;
@@ -1540,12 +1547,47 @@ const readPdf = async (
 
       if (section) {
         sections.push(section);
-        extractedLength += section.length;
-      }
-      if (extractedLength > EXTRACTED_TEXT_LIMIT) {
-        throw new Error('PDF 提取后的正文过大');
       }
       onProgress?.(0.1 + pageNumber / document.numPages * 0.88);
+    }
+
+    const minimumTextPages = Math.max(1, Math.ceil(document.numPages * 0.25));
+    if (meaningfulTextPages < minimumTextPages) {
+      const allPageNumbers = Array.from(
+        { length: document.numPages },
+        (_, index) => index + 1,
+      );
+      const readablePageNumbers = allPageNumbers.filter(
+        (pageNumber) => !skippedPageNumbers.has(pageNumber),
+      );
+      const pageNumbers = readablePageNumbers.length
+        ? readablePageNumbers
+        : allPageNumbers;
+      const fingerprint = document.fingerprints.find(
+        (value): value is string => typeof value === 'string' && Boolean(value),
+      ) ?? `${file.name}:${file.size}:${file.lastModified}`;
+      const outline = [...headings.entries()].flatMap(([pageIndex, pageHeadings]) => (
+        pageHeadings.map((heading) => ({
+          ...heading,
+          pageNumber: pageIndex + 1,
+        }))
+      ));
+
+      onProgress?.(1);
+      return {
+        source: pageNumbers.map((pageNumber) => `第 ${pageNumber} 页`).join('\n\n'),
+        markdown: false,
+        title,
+        author: author || undefined,
+        ...(cover ? { cover } : {}),
+        pdf: {
+          file: file.slice(0, file.size, 'application/pdf'),
+          fingerprint,
+          pageCount: document.numPages,
+          pageNumbers,
+          outline,
+        },
+      };
     }
 
     if (!sections.slice(1).some((section) => /\S/.test(section.replace(/^#{1,6} .*$/gm, '')))) {
@@ -1585,7 +1627,6 @@ export const readDocumentFile = async (
   if (!supportedExtensions.has(extension)) {
     throw new Error('目前支持 TXT、Markdown、PDF 和 EPUB');
   }
-  assertFileSize(file, extension);
   options.onProgress?.(0);
 
   if (extension === 'pdf') {
