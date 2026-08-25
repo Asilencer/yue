@@ -1,6 +1,10 @@
 export type TextSegment = {
   text: string;
   startOffset: number;
+  paragraphStartOffset: number;
+  paragraphIndex: number;
+  continued: boolean;
+  breakStrategy?: 'line';
 };
 
 export type PaginateTextSegmentsOptions = {
@@ -41,8 +45,14 @@ export const createTextSegments = (
 ): TextSegment[] => {
   let offset = 0;
 
-  return paragraphs.map((text) => {
-    const segment = { text, startOffset: offset };
+  return paragraphs.map((text, paragraphIndex) => {
+    const segment = {
+      text,
+      startOffset: offset,
+      paragraphStartOffset: offset,
+      paragraphIndex,
+      continued: false,
+    };
 
     offset += text.length + 1;
     return segment;
@@ -112,6 +122,15 @@ const findFittingPrefix = async (
 
   if (best === 0) {
     throw new Error('The reading page cannot fit one grapheme.');
+  }
+
+  if (segment.breakStrategy === 'line') {
+    const candidate = graphemes.slice(0, best).join('');
+    const lineBreak = candidate.lastIndexOf('\n');
+
+    if (lineBreak >= 0) {
+      return candidate.slice(0, lineBreak + 1);
+    }
   }
   const minimumBreak = Math.floor(best * MINIMUM_PUNCTUATION_BREAK_RATIO);
 
@@ -202,8 +221,10 @@ export const paginateTextSegments = async (
       const tailText = segment.text.slice(prefix.length);
       const tail = tailText
         ? {
+            ...segment,
             text: tailText,
             startOffset: segment.startOffset + prefix.length,
+            continued: true,
           }
         : null;
 

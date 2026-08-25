@@ -26,12 +26,18 @@
  * ```
  */
 
+import hljs from 'highlight.js/lib/common';
+import katex from 'katex';
+import 'katex/dist/katex.min.css';
 import './index.css';
+import pageTurnBackwardOne from './assets/audio/page-turn-backward-01.ogg';
+import pageTurnBackwardTwo from './assets/audio/page-turn-backward-02.ogg';
+import pageTurnForwardOne from './assets/audio/page-turn-forward-01.ogg';
+import pageTurnForwardTwo from './assets/audio/page-turn-forward-02.ogg';
 import libraryImage from './assets/scenes/city-morning-library.png';
 import landingImage from './assets/scenes/landing-mountain-morning-v2.png';
 import coastOutlook from './assets/scenes/outlook-coast-afternoon.png';
 import duskOutlook from './assets/scenes/outlook-city-dusk.png';
-import mountainOutlook from './assets/scenes/outlook-mountain-morning.png';
 import type { ReaderCommand } from './global';
 import {
   deleteImportedBook,
@@ -39,26 +45,42 @@ import {
   loadImportedBookMetadata,
   parseImportedBook,
   saveImportedBook,
+  type ImportedBookChapter,
+  type ImportedBookFormat,
+  type ImportedInlineRun,
   type ImportedBookMetadata,
   type ImportedBookRecord,
+  type ImportedSourceFormat,
 } from './library-store';
 import {
   createTextSegments,
-  paginateTextSegments,
   type TextSegment,
 } from './paginator';
 import { createThinkingOrb } from './thinking-orb';
 
 type AppMode = 'landing' | 'library' | 'opening' | 'reading' | 'closing';
 type Direction = 'forward' | 'backward';
-type ReaderPanel = 'progress' | 'contents' | 'appearance';
+type ReaderPanel = 'appearance';
 type LandingPanel = 'background' | 'appearance';
+type LibraryPanel = 'search' | 'import';
+type LibraryCategory = 'all' | 'reading' | 'finished';
+type OpenBookResult = 'opened' | 'cancelled' | 'failed';
+type BookMaterial = 'cloth' | 'paper' | 'aged';
+
+const libraryCategoryLabels: Record<LibraryCategory, string> = {
+  all: '全部',
+  reading: '在读',
+  finished: '已读',
+};
 
 type SourcePage = {
   runningTitle: string;
   eyebrow?: string;
   heading?: string;
   paragraphs: string[];
+  segments?: TextSegment[];
+  formats?: ImportedBookFormat[];
+  sourceFormat?: ImportedSourceFormat;
 };
 
 type ReadingPage = SourcePage & {
@@ -71,26 +93,56 @@ type Book = {
   title: string;
   author: string;
   color: string;
-  position?: [number, number, number, number];
   chapterTitle?: string;
   paragraphs?: string[];
+  chapters?: ImportedBookChapter[];
+  formats?: ImportedBookFormat[];
+  sourceFormat?: ImportedSourceFormat;
+  material?: BookMaterial;
   imported?: boolean;
 };
 
 type ReaderAppearance = {
   fontFamily: string;
   fontSize: number;
+  lineHeight: number;
   foreground: string;
-  background: string;
 };
 
 type StoredReaderAppearance = Partial<ReaderAppearance> & {
   font?: 'serif' | 'sans';
-  theme?: 'day' | 'night';
-  paper?: 'warm' | 'neutral' | 'sage';
 };
 
-type ReaderBookmarks = Record<string, number[]>;
+type ReaderPins = Record<string, number>;
+
+const HIDDEN_SAMPLE_BOOKS_KEY = 'hiddenSampleBooks:v1';
+const FINISHED_BOOKS_KEY = 'finishedBooks:v1';
+const hiddenSampleBookIds = new Set<string>(
+  (() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(HIDDEN_SAMPLE_BOOKS_KEY) ?? '[]');
+
+      return Array.isArray(stored)
+        ? stored.filter((value): value is string => typeof value === 'string')
+        : [];
+    } catch {
+      return [];
+    }
+  })(),
+);
+const finishedBookIds = new Set<string>(
+  (() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(FINISHED_BOOKS_KEY) ?? '[]');
+
+      return Array.isArray(stored)
+        ? stored.filter((value): value is string => typeof value === 'string')
+        : [];
+    } catch {
+      return [];
+    }
+  })(),
+);
 
 const LANDING_SCENE_KEY = 'landingScene:v1';
 const landingScenes = [
@@ -130,85 +182,64 @@ const initialLandingSceneIndex = Math.max(
 );
 const initialLandingScene = landingScenes[initialLandingSceneIndex] ?? landingScenes[0];
 
-const OUTLOOK_SCENE_KEY = 'outlookScene:v1';
-const outlookScenes = [
-  { id: 'mountain', label: '清晨山野', src: mountainOutlook, position: 'center' },
-  { id: 'city-morning', label: '清晨街景', src: libraryImage, position: 'right center' },
-  { id: 'city-dusk', label: '黄昏都市', src: duskOutlook, position: 'center' },
-  { id: 'coast', label: '午后海岸', src: coastOutlook, position: 'center' },
-] as const;
-const storedOutlookScene = localStorage.getItem(OUTLOOK_SCENE_KEY);
-const initialOutlookSceneIndex = Math.max(
-  0,
-  outlookScenes.findIndex((scene) => scene.id === storedOutlookScene),
-);
-const initialOutlookScene = outlookScenes[initialOutlookSceneIndex] ?? outlookScenes[0];
-
 const books: Book[] = [
   {
     id: 'lake',
     title: '湖边散记',
     author: '林望',
     color: '#5276c7',
-    position: [5.3, 4.23, 1.2, 18.04],
+    material: 'cloth',
   },
   {
     id: 'spring',
     title: '春日庭院',
     author: '许青禾',
     color: '#86b99c',
-    position: [6.56, 4.23, 1.58, 18.35],
+    material: 'paper',
   },
   {
     id: 'letters',
     title: '薄暮书简',
     author: '周野',
     color: '#ef8b74',
-    position: [10.53, 4.23, 1.77, 19.25],
+    material: 'aged',
   },
   {
     id: 'north',
     title: '北方手札',
     author: '沈舟',
     color: '#273f58',
-    position: [12.48, 4.23, 3.03, 19.96],
+    material: 'aged',
   },
   {
     id: 'plants',
     title: '寂静植物学',
     author: '简森',
     color: '#5c7f70',
-    position: [15.57, 4.23, 1.45, 20.56],
+    material: 'cloth',
   },
   {
     id: 'route',
     title: '微光航线',
     author: '陈屿',
     color: '#f2d164',
-    position: [12.74, 33.06, 1.13, 25.1],
+    material: 'paper',
   },
   {
     id: 'notes',
     title: '月下笔记',
     author: '白榆',
     color: '#5276c7',
-    position: [2.4, 36.59, 2.59, 22.18],
+    material: 'cloth',
   },
   {
     id: 'distance',
     title: '远方来信',
     author: '陶然',
     color: '#ef8b74',
-    position: [15.07, 35.79, 2.27, 22.08],
+    material: 'paper',
   },
 ];
-
-const importedBookPositions = [
-  [5.04, 39.31, 2.08, 19.25],
-  [9.27, 34.98, 1.2, 23.39],
-  [10.53, 32.76, 2.14, 25.5],
-  [17.4, 35.58, 1.13, 22.08],
-] as const;
 
 const sourceSpreads: Array<[SourcePage, SourcePage]> = [
   [
@@ -316,6 +347,14 @@ const paragraphStream = sourceSpreads
   .flatMap((spread) => spread)
   .flatMap((page) => page.paragraphs);
 
+const builtInChapters: ImportedBookChapter[] = [
+  { title: '窗外并不遥远', level: 1, paragraphIndex: 0 },
+  { title: '阅读回到日常', level: 1, paragraphIndex: 9 },
+  { title: '私人的时间地图', level: 1, paragraphIndex: 14 },
+  { title: '保留开放的问题', level: 1, paragraphIndex: 19 },
+  { title: '重新进入现实', level: 1, paragraphIndex: 24 },
+];
+
 const emptyPage = (offset = 0): ReadingPage => ({
   runningTitle: '',
   paragraphs: [],
@@ -323,8 +362,7 @@ const emptyPage = (offset = 0): ReadingPage => ({
   endOffset: offset,
 });
 
-let pages: ReadingPage[] = [emptyPage(), emptyPage()];
-let spreads: Array<[ReadingPage, ReadingPage]> = [[pages[0], pages[1]]];
+let readingDocument = emptyPage();
 
 const app = document.querySelector<HTMLDivElement>('#app');
 
@@ -345,27 +383,6 @@ const queryRequired = <T extends Element>(
   return element;
 };
 
-const renderBookButtons = (items: Book[]) => items
-  .map((book) => {
-    const position = book.position ?? [0, 0, 0, 0];
-
-    return `
-      <button
-        class="book-hit book-spine"
-        data-book-id="${book.id}"
-        aria-label="打开《${book.title}》"
-        title="${book.title} · ${book.author}"
-        style="--x: ${position[0]}%; --y: ${position[1]}%;
-          --w: ${position[2]}%; --h: ${position[3]}%;
-          --book-color: ${book.color}"
-      >
-        <span class="book-spine-title">${book.title}</span>
-        <span class="book-spine-author">${book.author}</span>
-      </button>
-    `;
-  })
-  .join('');
-
 const reiconImageMountain = `
   <path
     d="M21.7719 16.8773 16.0746 9.128c-.5333-.724-1.616-.724-2.148 0
@@ -381,99 +398,167 @@ const reiconSettings4 = `
   <path d="M2 12h5M17 12h5" />
 `;
 
-const reiconTextHighlight = `
-  <path d="M8.7266 20.3333H19" />
+const reiconBook2 = `
   <path
-    d="m13.052 16.164-6.512-3.288c-.7187-.3627-.9547-1.276-.5-1.9413
-      l5.0213-7.364c.7533-1.1053 2.2107-1.4813 3.4053-.8787l2.076 1.048
-      c1.1947.6027 1.7573 1.9987 1.3147 3.2613l-2.944 8.412
-      c-.2667.76-1.14 1.1133-1.86.7493Z"
+    d="M22 16.7399V4.6699c0-1.2-.98-2.09-2.17-1.99h-.06
+      c-2.1.18-5.29 1.25-7.07 2.37l-.17.11c-.29.18-.77.18-1.06 0l-.25-.15
+      c-1.78-1.11-4.96-2.17-7.06-2.34C2.97 2.5699 2 3.4699 2 4.6599v12.08
+      c0 .96.78 1.86 1.74 1.98l.29.04c2.17.29 5.52 1.39 7.44 2.44l.04.02
+      c.27.15.7.15.96 0 1.92-1.06 5.28-2.17 7.46-2.46l.33-.04c.96-.12 1.74-1.02 1.74-1.98Z"
   />
-  <path
-    d="M13.364 16.3266c-2.6587.688-3.9533 2.652-4.336 3.412l-1.488-.7507
-      -1.488-.7507c.384-.76 1.1947-2.968.1707-5.5147"
-  />
-  <path d="m9.0266 19.7386-.3.5947H5l1.052-2.0973" />
+  <path d="M12 5.49v15M7.75 8.49H5.5M8.5 11.49h-3" />
 `;
 
-const reiconRuler = `
-  <path d="M5 17h14c2 0 3-1 3-3v-4c0-2-1-3-3-3H5c-2 0-3 1-3 3v4c0 2 1 3 3 3Z" />
-  <path d="M18 7v5M14 7v3M10.05 7 10 12M6 7v4" />
+const reiconBookSaved = `
+  <path
+    d="M22 4.6699V16.74c0 .96-.78 1.86-1.74 1.98l-.33.04
+      c-2.18.29-5.54 1.4-7.46 2.46-.26.15-.69.15-.96 0l-.04-.02
+      c-1.92-1.05-5.27-2.15-7.44-2.44l-.29-.04C2.78 18.6 2 17.7 2 16.74V4.6599
+      c0-1.19.97-2.09 2.16-1.99 2.1.17 5.28 1.23 7.06 2.34l.25.15
+      c.29.18.77.18 1.06 0l.17-.11c.63-.39 1.43-.78 2.3-1.13V8l2-1.33L19 8V2.78
+      c.27-.05.53-.08.77-.1h.06c1.19-.1 2.17.79 2.17 1.99Z"
+  />
+  <path d="M12 5.49v15M19 2.78V8l-2-1.33L15 8V3.92c1.31-.52 2.77-.94 4-1.14Z" />
 `;
 
-const reiconColorFilter = `
+const reiconArrowLeft2 = `
+  <path d="m15 19.92-6.52-6.52a1.98 1.98 0 0 1 0-2.8L15 4.08" />
+`;
+
+const reiconReply2 = `
+  <path d="m10 6.5-5.5 5.5 5.5 5.5" />
+  <path d="M4.5 12h10.25c3.45 0 5.75-2.3 5.75-5.75" />
+`;
+
+const reiconArrowRight2 = `
+  <path d="m8.91 19.92 6.52-6.52a1.98 1.98 0 0 0 0-2.8L8.91 4.08" />
+`;
+
+const reiconBookmark2 = `
   <path
-    d="M14 16c0 1.77-.77 3.37-2 4.46A5.97 5.97 0 0 1 8 22a6 6 0 0 1-1.58-11.79
-      6 6 0 0 0 7.16 3.58c.27.68.42 1.43.42 2.21Z"
+    d="M14 2c2 0 3 1.01 3 3.03v7.05c0 1.99-1.41 2.76-3.14 1.72l-1.32-.8
+      c-.3-.18-.78-.18-1.08 0l-1.32.8C8.41 14.84 7 14.07 7 12.08V5.03C7 3.01 8 2 10 2h4Z"
   />
   <path
-    d="M18 8c0 .78-.15 1.53-.42 2.21a6 6 0 0 1-11.16 0A6 6 0 1 1 18 8Z"
-  />
-  <path
-    d="M22 16a6 6 0 0 1-10 4.46A6 6 0 0 0 13.58 13.79
-      a6 6 0 0 0 4-3.58A6 6 0 0 1 22 16Z"
+    d="M6.82 4.99C3.41 5.56 2 7.66 2 11.9v3.03C2 19.98 4 22 9 22h6
+      c5 0 7-2.02 7-7.07V11.9c0-4.31-1.46-6.42-5-6.94"
   />
 `;
 
-const reiconColorsSquare = `
+const reiconSetting4 = `
+  <path d="M22 6.5h-6M6 6.5H2" />
+  <circle cx="10" cy="6.5" r="3.5" />
+  <path d="M22 17.5h-4M8 17.5H2" />
+  <circle cx="14" cy="17.5" r="3.5" />
+`;
+
+const reiconFeather = `
+  <path d="M17.2986 11.6413c-.6036 4.7-4.5831 5.4245-8.7144 4.7904" />
   <path
-    d="M13.2 14.4a3.6 3.6 0 1 1-4.55-3.47 3.6 3.6 0 0 0 4.3 2.15
-      c.16.4.25.85.25 1.32Z"
+    d="M3.6667 20.3333S5.416 4.972 20.3333 3.6667
+      c-.7467 1.3013-.764 3.4733-1.2613 5.652-.6987 2.6813-3.1133 3.0147-6.072 3.0147"
   />
-  <path d="M15.6 9.6a3.6 3.6 0 1 1-7.2 0 3.6 3.6 0 0 1 7.2 0Z" />
+`;
+
+const reiconSize = `
   <path
-    d="M18 14.4a3.6 3.6 0 0 1-6 2.68 3.6 3.6 0 0 0 .95-4.01
-      3.6 3.6 0 0 0 2.4-2.15A3.6 3.6 0 0 1 18 14.4Z"
+    d="M16.97 12.25v4.5c0 3.75-1.5 5.25-5.25 5.25h-4.5
+      c-3.75 0-5.25-1.5-5.25-5.25v-4.5C1.97 8.5 3.47 7 7.22 7h4.5
+      c3.75 0 5.25 1.5 5.25 5.25Z"
   />
   <path
-    d="M9 22h6c5 0 7-2 7-7V9c0-5-2-7-7-7H9C4 2 2 4 2 9v6c0 5 2 7 7 7Z"
+    d="M21.97 5.85v3.3c0 2.75-1.1 3.85-3.85 3.85h-1.15v-.75
+      C16.97 8.5 15.47 7 11.72 7h-.75V5.85C10.97 3.1 12.07 2 14.82 2h3.3
+      c2.75 0 3.85 1.1 3.85 3.85Z"
   />
+`;
+
+const reiconParagraphSpacing = `
+  <path
+    fill="currentColor"
+    stroke="none"
+    d="M3.25 3a.75.75 0 0 1 .75-.75h16a.75.75 0 0 1 0 1.5H4A.75.75 0 0 1 3.25 3Z"
+  />
+  <path
+    fill="currentColor"
+    stroke="none"
+    d="M3.25 21a.75.75 0 0 1 .75-.75h16a.75.75 0 0 1 0 1.5H4a.75.75 0 0 1-.75-.75Z"
+  />
+  <path
+    fill="currentColor"
+    stroke="none"
+    d="M12.53 4.97a.75.75 0 0 0-1.06 0l-3 3a.75.75 0 1 0 1.06 1.06l1.72-1.719v9.378l-1.72-1.719
+      a.75.75 0 0 0-1.06 1.06l3 3a.75.75 0 0 0 1.06 0l3-3a.75.75 0 0 0-1.06-1.06l-1.72 1.719
+      V7.311l1.72 1.719a.75.75 0 0 0 1.06-1.06l-3-3Z"
+  />
+`;
+
+const reiconBrush3 = `
+  <path
+    d="M9.5 19.5V18h-5c-.55 0-1.05-.22-1.41-.59A1.96 1.96 0 0 1 2.5 16
+      c0-1.03.8-1.89 1.81-1.99.06-.01.12-.01.19-.01h15c.07 0 .13 0 .19.01
+      .48.04.9.25 1.22.58.41.4.63.97.58 1.59-.09 1.05-1.04 1.82-2.1 1.82H14.5v1.5
+      a2.5 2.5 0 0 1-5 0Z"
+  />
+  <path
+    d="m20.17 5.3-.48 8.71c-.06-.01-.12-.01-.19-.01h-15c-.07 0-.13 0-.19.01L3.83 5.3
+      C3.65 3.53 5.04 2 6.81 2h10.38c1.77 0 3.16 1.53 2.98 3.3ZM7.99 2v5M12 2v2"
+  />
+`;
+
+const reiconDocumentUpload = `
+  <path d="M9 17V11L7 13M9 11L11 13" />
+  <path
+    d="M22 10V15C22 20 20 22 15 22H9C4 22 2 20 2 15V9C2 4 4 2 9 2H14"
+  />
+  <path d="M22 10H18C15 10 14 9 14 6V2L22 10Z" />
+`;
+
+const reiconSearchNormal2 = `
+  <path
+    d="M11.5 21C16.7467 21 21 16.7467 21 11.5C21 6.25329 16.7467 2 11.5 2
+      C6.25329 2 2 6.25329 2 11.5C2 16.7467 6.25329 21 11.5 21Z"
+  />
+  <path d="M22 22L20 20" />
+`;
+
+const reiconTrash9 = `
+  <path d="M21 5.98C17.67 5.65 14.32 5.48 10.98 5.48C9 5.48 7.02 5.58 5.04 5.78L3 5.98" />
+  <path d="M8.5 4.97L8.72 3.66C8.88 2.71 9 2 10.69 2H13.31C15 2 15.13 2.75 15.28 3.67L15.5 4.97" />
+  <path d="M18.85 9.14L18.2 19.21C18.09 20.78 18 22 15.21 22H8.79C6 22 5.91 20.78 5.8 19.21L5.15 9.14" />
+  <path d="M10.33 16.5H13.66M9.5 12.5H14.5" />
+`;
+
+const reiconTickCircle = `
+  <path d="M12 22c5.5 0 10-4.5 10-10S17.5 2 12 2 2 6.5 2 12s4.5 10 10 10Z" />
+  <path d="m7.75 12 2.83 2.83 5.67-5.66" />
 `;
 
 const readerIconPaths = {
-  library: `
-    <path d="M3.75 5.5h4.5A3.75 3.75 0 0 1 12 9.25v10.5A3.75 3.75 0 0 0 8.25 16h-4.5V5.5Z" />
-    <path d="M20.25 5.5h-4.5A3.75 3.75 0 0 0 12 9.25v10.5A3.75 3.75 0 0 1 15.75 16h4.5V5.5Z" />
-  `,
-  progress: `
-    <circle cx="12" cy="12" r="8.25" />
-    <path d="M12 3.75V12h8.25" />
-  `,
-  previous: '<path d="m14.75 5.75-6.25 6.25 6.25 6.25" />',
-  next: '<path d="m9.25 5.75 6.25 6.25-6.25 6.25" />',
-  contents: `
-    <circle cx="5" cy="6" r=".75" />
-    <circle cx="5" cy="12" r=".75" />
-    <circle cx="5" cy="18" r=".75" />
-    <path d="M9 6h10M9 12h10M9 18h10" />
-  `,
-  bookmark: `
-    <path class="reader-icon-bookmark-shape" d="M7 4.25h10v15.5L12 16.5l-5 3.25V4.25Z" />
-  `,
+  library: reiconBook2,
+  libraryHome: reiconArrowLeft2,
+  minimapReturn: reiconReply2,
+  minimapPin: reiconBookmark2,
+  previous: reiconArrowLeft2,
+  next: reiconArrowRight2,
+  contents: reiconBookSaved,
+  bookmark: reiconBookmark2,
   landingBackground: reiconImageMountain,
   landingAppearance: reiconSettings4,
-  appearanceFont: reiconTextHighlight,
-  appearanceSize: reiconRuler,
-  appearanceForeground: reiconColorFilter,
-  appearanceBackground: reiconColorsSquare,
+  appearanceFont: reiconFeather,
+  appearanceSize: reiconSize,
+  appearanceLineHeight: reiconParagraphSpacing,
+  appearanceForeground: reiconBrush3,
+  libraryImport: reiconDocumentUpload,
+  librarySearch: reiconSearchNormal2,
+  trash: reiconTrash9,
+  finished: reiconTickCircle,
   background: `
     <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
     <circle cx="16.25" cy="8.25" r="1.5" />
     <path d="m5.5 17 4.25-4.5 3.1 3 2.15-2.25L18.5 17" />
   `,
-  appearance: `
-    <path d="M4.75 7V5.5h9V7M9.25 5.5V19M6.75 19h5" />
-    <path d="M15 10h4.25M17.25 10v9M15.5 19H19" />
-  `,
-  sound: `
-    <path d="M4 9.75v4.5h4l4.25 3.5V6.25L8 9.75H4Z" />
-    <path d="M15.5 9a4.25 4.25 0 0 1 0 6M17.75 6.75a7.4 7.4 0 0 1 0 10.5" />
-  `,
-  soundOff: `
-    <path d="M4 9.75v4.5h4l4.25 3.5V6.25L8 9.75H4Z" />
-    <path d="m15.25 9.25 5.5 5.5m0-5.5-5.5 5.5" />
-  `,
-  close: '<path d="m6.5 6.5 11 11m0-11-11 11" />',
+  appearance: reiconSetting4,
 } as const;
 
 type ReaderIconName = keyof typeof readerIconPaths;
@@ -540,18 +625,18 @@ app.innerHTML = `
         </span>
       </button>
 
-      <nav class="landing-dock" aria-label="首页设置">
+      <nav class="landing-dock config-dock" aria-label="首页设置">
         <button
-          class="landing-control-button"
+          class="landing-control-button config-button"
           data-landing-action="background"
           aria-label="设置首页背景"
           title="设置首页背景"
           aria-expanded="false"
           aria-controls="landing-control-hub"
         >${renderReaderIcon('landingBackground')}</button>
-        <span class="landing-dock-divider" aria-hidden="true"></span>
+        <span class="landing-dock-divider config-divider" aria-hidden="true"></span>
         <button
-          class="landing-control-button"
+          class="landing-control-button config-button"
           data-landing-action="appearance"
           aria-label="设置首页排版"
           title="设置首页排版"
@@ -561,7 +646,7 @@ app.innerHTML = `
       </nav>
 
       <section
-        class="landing-hub"
+        class="landing-hub config-panel"
         id="landing-control-hub"
         data-landing-panel
         aria-label="首页设置"
@@ -586,98 +671,147 @@ app.innerHTML = `
       aria-label="我的书架"
       aria-hidden="true"
       inert
+      data-phase="browsing"
+      data-ui-ink="${initialLandingScene.ink}"
     >
-      <div class="scene-plane">
-        <div class="scene-outlook" aria-hidden="true">
-          <img
-            class="scene-outlook-image"
-            data-outlook-image
-            src="${initialOutlookScene.src}"
-            style="object-position: ${initialOutlookScene.position}"
-            alt=""
-          />
-        </div>
-        <img
-          class="scene-image scene-shelf-image"
-          src="${libraryImage}"
-          alt="窗边固定的当代书架"
-        />
-        <div class="sun-haze" aria-hidden="true"></div>
-        <div class="book-hotspots" aria-label="书架上的书">
-          ${renderBookButtons(books)}
-          <div class="imported-book-list" data-imported-books></div>
-          <input
-            class="visually-hidden"
-            data-import-input
-            type="file"
-            accept=".txt,.md,.markdown,text/plain,text/markdown"
-            multiple
-            tabindex="-1"
-            aria-hidden="true"
-          />
-        </div>
-        <button
-          class="shelf-management-tag"
-          data-library-open
-          aria-label="管理书架"
-          aria-controls="shelf-manager"
-          aria-expanded="false"
-        >
-          <span data-library-tag-label>管理</span>
-        </button>
+      <img
+        class="library-scene"
+        data-library-scene
+        src="${initialLandingScene.src}"
+        style="object-position: ${initialLandingScene.position}"
+        alt="书架背景：${initialLandingScene.label}"
+      />
+      <div class="library-atmosphere" aria-hidden="true"></div>
 
-        <button
-          class="outlook-switch"
-          data-outlook-switch
-          aria-label="切换窗外景色，当前为${initialOutlookScene.label}"
-          title="切换窗景"
-        >
-          <span>窗景</span>
-          <strong data-outlook-label>${initialOutlookScene.label}</strong>
-          <span aria-hidden="true">↻</span>
-        </button>
+      <aside class="library-side-rail" aria-label="书架导航">
+        <nav class="library-categories" aria-label="书籍分类">
+          <button data-library-category="all" aria-pressed="true">
+            全部 0 本
+          </button>
+          <button data-library-category="reading" aria-pressed="false">
+            在读 0 本
+          </button>
+          <button data-library-category="finished" aria-pressed="false">
+            已读 0 本
+          </button>
+        </nav>
+      </aside>
 
-        <section
-          class="shelf-manager"
-          id="shelf-manager"
-          data-library-lens
-          aria-label="书架管理"
-          role="dialog"
-          aria-modal="true"
-          aria-hidden="true"
-          inert
-        >
-          <div class="shelf-cubby-washes" aria-hidden="true">
-            <span></span>
-            <span></span>
-            <span></span>
-          </div>
-          <header class="shelf-manager-header">
-            <div>
-              <span>书架正面</span>
-              <strong>管理我的书</strong>
-              <small data-library-count>0 本书</small>
-            </div>
-            <div class="shelf-manager-actions">
-              <button data-library-import>放入新书</button>
-              <button data-library-close aria-label="关闭书架管理">完成</button>
-            </div>
-          </header>
-          <div class="shelf-manager-stage">
-            <label class="library-search">
-              <span class="visually-hidden">搜索书架中的书</span>
-              <input data-library-search type="search" placeholder="搜索书名或作者" />
-            </label>
-            <div class="library-grid" data-library-grid></div>
-            <p class="library-empty" data-library-empty>没有找到相符的书。</p>
-          </div>
-        </section>
-      </div>
+      <section class="library-content" aria-label="书籍">
+        <div
+          class="book-hotspots library-card-grid"
+          id="library-card-grid"
+          data-library-grid
+          aria-label="书架上的书"
+        ></div>
+        <div class="library-empty" data-library-empty hidden>
+          <strong data-library-empty-title></strong>
+          <button type="button" data-library-empty-action></button>
+        </div>
+      </section>
+
+      <input
+        class="visually-hidden"
+        data-import-input
+        type="file"
+        accept=".txt,.md,.markdown,.pdf,.epub,text/plain,text/markdown,application/pdf,application/epub+zip"
+        multiple
+        tabindex="-1"
+        aria-hidden="true"
+      />
 
       <div class="library-drop-hint" data-library-drop-hint aria-hidden="true">
-        <span>把书放到书架上</span>
-        <small>支持 TXT 与 Markdown</small>
+        <span>把书放入书库</span>
+        <small>支持 Markdown、TXT、PDF 与 EPUB</small>
       </div>
+
+      <nav class="landing-dock library-dock config-dock" aria-label="书架工具">
+        <div class="library-dock-group" role="group" aria-label="导航">
+          <button
+            class="landing-control-button config-button"
+            data-return-home
+            aria-label="返回首页"
+            title="返回首页"
+          >${renderReaderIcon('libraryHome')}</button>
+        </div>
+        <span
+          class="landing-dock-divider library-dock-divider config-divider"
+          aria-hidden="true"
+        ></span>
+        <div class="library-dock-group" role="group" aria-label="书籍工具">
+          <button
+            class="landing-control-button config-button"
+            data-library-action="import"
+            aria-label="导入书籍"
+            title="导入书籍"
+            aria-expanded="false"
+            aria-controls="library-control-hub"
+          >${renderReaderIcon('libraryImport')}</button>
+          <button
+            class="landing-control-button config-button"
+            data-library-action="search"
+            aria-label="搜索书籍"
+            title="搜索书籍"
+            aria-expanded="false"
+            aria-controls="library-control-hub"
+          >${renderReaderIcon('librarySearch')}</button>
+        </div>
+      </nav>
+
+      <section
+        class="landing-hub library-hub config-panel"
+        id="library-control-hub"
+        data-library-panel
+        aria-label="书架工具"
+        aria-hidden="true"
+        inert
+      >
+        <div class="library-hub-view library-search-view" data-library-panel-view="search">
+          <label class="library-search-field">
+            ${renderReaderIcon('librarySearch')}
+            <span class="visually-hidden">搜索书名或作者</span>
+            <input
+              data-library-search
+              type="search"
+              placeholder="书名或作者"
+              autocomplete="off"
+            />
+            <span class="library-search-meta" data-library-search-meta aria-live="polite"></span>
+          </label>
+        </div>
+
+        <div class="library-hub-view library-import-view" data-library-panel-view="import">
+          <button class="library-import-entry" type="button" data-import-choose>
+            ${renderReaderIcon('libraryImport')}
+            <span>
+              <strong>导入书籍</strong>
+              <small>Markdown · TXT · PDF · EPUB</small>
+            </span>
+          </button>
+          <div class="library-import-feedback" data-import-feedback hidden>
+            <div class="library-import-summary">
+              ${renderReaderIcon('libraryImport')}
+              <span data-import-status>正在导入</span>
+              <strong data-import-percent>0%</strong>
+            </div>
+            <div
+              class="segmented-progress library-import-progress"
+              data-import-progress
+              role="progressbar"
+              aria-label="导入书籍进度"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+              style="--progress: 0%"
+            >
+              <span class="segmented-progress-track" aria-hidden="true">
+                <span class="segmented-progress-fill"></span>
+                <span class="segmented-progress-glow"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+      </section>
 
     </section>
 
@@ -698,143 +832,83 @@ app.innerHTML = `
         aria-hidden="true"
       />
       <div class="reader-ambient" aria-hidden="true"></div>
-      <div class="reader-surface">
+      <div class="reader-surface" tabindex="0" aria-label="连续阅读正文">
         <div class="book-copy">
-          <article class="page-copy page-copy-left" data-left-page></article>
-          <article class="page-copy page-copy-right" data-right-page></article>
+          <article class="page-copy reading-document" data-reading-document></article>
         </div>
-        <article
-          class="page-copy page-copy-right pagination-measure"
-          data-pagination-measure
-          aria-hidden="true"
-        ></article>
-        <div class="page-turn-sheet" aria-hidden="true">
-          <article class="turn-face turn-front" data-turn-front></article>
-          <article class="turn-face turn-back" data-turn-back></article>
-        </div>
-        <div class="reader-gutter" aria-hidden="true"></div>
       </div>
+      <div class="reader-scroll-fade reader-scroll-fade-top" aria-hidden="true"></div>
+      <div class="reader-scroll-fade reader-scroll-fade-bottom" aria-hidden="true"></div>
 
-      <button
-        class="page-zone page-zone-left"
-        data-page-back-zone
-        aria-hidden="true"
-        tabindex="-1"
-      ></button>
-      <button
-        class="page-zone page-zone-right"
-        data-page-forward-zone
-        aria-hidden="true"
-        tabindex="-1"
-      ></button>
+      <aside
+        class="reader-chrome reader-minimap"
+        data-reader-minimap
+        aria-label="阅读进度"
+        tabindex="0"
+      >
+        <div class="reader-minimap-surface">
+          <header class="reader-minimap-header">
+            <strong class="reader-progress-percent" data-progress-percent>0%</strong>
+          </header>
 
-      <nav class="reader-chrome reader-dock" aria-label="阅读控制">
-        <div class="reader-dock-group reader-dock-group-primary">
-          <button
-            class="reader-control-button return-control"
-            data-return
-            aria-label="返回书架"
-            title="返回书架"
-          >${renderReaderIcon('library')}</button>
-          <button
-            class="reader-control-button"
-            data-reader-action="progress"
-            aria-label="阅读进度"
-            title="阅读进度"
-            aria-expanded="false"
-            aria-controls="reader-control-hub"
-          >${renderReaderIcon('progress')}</button>
-          <button
-            class="reader-control-button"
-            data-reader-action="contents"
-            aria-label="目录与书签"
-            title="目录与书签"
-            aria-expanded="false"
-            aria-controls="reader-control-hub"
-          >${renderReaderIcon('contents')}</button>
+          <div class="reader-minimap-body">
+            <div class="reader-minimap-rail" data-reader-progress>
+              <div
+                class="reader-minimap-bars"
+                data-reader-minimap-bars
+                aria-hidden="true"
+              ></div>
+              <span
+                class="reader-progress-bookmarks"
+                data-reader-progress-bookmarks
+              ></span>
+              <input
+                data-progress-slider
+                type="range"
+                min="0"
+                max="100"
+                value="0"
+                step="0.1"
+                aria-label="阅读进度"
+                aria-orientation="vertical"
+              />
+            </div>
+            <div
+              class="reader-minimap-label"
+              data-reader-minimap-label
+              role="tooltip"
+              aria-hidden="true"
+            ></div>
+          </div>
+          <nav class="reader-minimap-actions" aria-label="阅读快捷操作">
+            <button
+              class="reader-minimap-action"
+              data-reader-return
+              type="button"
+              aria-label="返回书架"
+              title="返回书架"
+            >${renderReaderIcon('minimapReturn')}</button>
+            <button
+              class="reader-minimap-action"
+              data-reader-action="bookmark"
+              type="button"
+              aria-label="固定当前阅读位置"
+              aria-pressed="false"
+              title="固定当前阅读位置"
+            >${renderReaderIcon('minimapPin')}</button>
+          </nav>
+          <span class="visually-hidden" data-reader-title></span>
         </div>
-        <span class="reader-dock-divider" aria-hidden="true"></span>
-        <div class="reader-dock-group reader-dock-group-pages">
-          <button
-            class="reader-control-button reader-page-button"
-            data-page-back
-            aria-label="上一页"
-            title="上一页"
-          >${renderReaderIcon('previous')}</button>
-          <button
-            class="reader-control-button reader-page-button"
-            data-page-forward
-            aria-label="下一页"
-            title="下一页"
-          >${renderReaderIcon('next')}</button>
-        </div>
-        <span class="reader-dock-divider" aria-hidden="true"></span>
-        <div class="reader-dock-group reader-dock-group-secondary">
-          <button
-            class="reader-control-button reader-bookmark"
-            data-reader-action="bookmark"
-            aria-label="添加当前书签"
-            title="添加当前书签"
-            aria-pressed="false"
-          >${renderReaderIcon('bookmark')}</button>
-          <button
-            class="reader-control-button"
-            data-reader-action="appearance"
-            data-settings-trigger
-            aria-label="阅读显示"
-            title="阅读显示"
-            aria-expanded="false"
-            aria-controls="reader-control-hub"
-          >${renderReaderIcon('appearance')}</button>
-          <button
-            class="reader-control-button sound-toggle"
-            data-sound
-            aria-label="纸张声效已开启"
-            title="纸张声效已开启"
-            aria-pressed="true"
-          >
-            <span class="reader-sound-on">${renderReaderIcon('sound')}</span>
-            <span class="reader-sound-off">${renderReaderIcon('soundOff')}</span>
-          </button>
-        </div>
-        <span class="visually-hidden" data-reader-title></span>
-      </nav>
+      </aside>
 
       <section
-        class="reader-hub"
+        class="reader-hub config-panel"
         id="reader-control-hub"
         data-reader-panel
-        aria-labelledby="reader-panel-title"
+        aria-label="阅读面板"
         aria-hidden="true"
         inert
       >
-        <header class="reader-hub-header">
-          <h2 id="reader-panel-title" data-reader-panel-title></h2>
-          <button
-            data-reader-panel-close
-            aria-label="关闭阅读面板"
-            title="关闭"
-          >${renderReaderIcon('close')}</button>
-        </header>
-
-        <div class="reader-hub-progress">
-          <span data-progress-chapter></span>
-          <input
-            data-progress-slider
-            type="range"
-            min="0"
-            max="0"
-            value="0"
-            step="1"
-            aria-label="阅读进度"
-          />
-          <span data-progress-label>0%</span>
-        </div>
-
-        <div class="reader-hub-view" data-panel-view="contents">
-          <div data-contents-list></div>
-        </div>
-
         <div
           class="reader-hub-view"
           data-panel-view="appearance"
@@ -877,35 +951,32 @@ app.innerHTML = `
               </label>
               <label class="appearance-field" data-reader-only>
                 <span class="appearance-field-label">
+                  ${renderReaderIcon('appearanceLineHeight')}
+                  <span>行距</span>
+                </span>
+                <input
+                  data-appearance-input="lineHeight"
+                  type="text"
+                  aria-label="行距"
+                  inputmode="decimal"
+                  pattern="[0-9.]*"
+                  placeholder="1.75"
+                />
+              </label>
+              <label class="appearance-field" data-reader-only>
+                <span class="appearance-field-label">
                   ${renderReaderIcon('appearanceForeground')}
-                  <span>前景色</span>
+                  <span>字体色</span>
                 </span>
                 <span class="appearance-color-input">
                   <span data-color-preview="foreground" aria-hidden="true"></span>
                   <input
                     data-appearance-input="foreground"
                     type="text"
-                    aria-label="前景色"
+                    aria-label="字体色"
                     autocomplete="off"
                     spellcheck="false"
                     placeholder="#252B2D"
-                  />
-                </span>
-              </label>
-              <label class="appearance-field" data-reader-only>
-                <span class="appearance-field-label">
-                  ${renderReaderIcon('appearanceBackground')}
-                  <span>背景色</span>
-                </span>
-                <span class="appearance-color-input">
-                  <span data-color-preview="background" aria-hidden="true"></span>
-                  <input
-                    data-appearance-input="background"
-                    type="text"
-                    aria-label="背景色"
-                    autocomplete="off"
-                    spellcheck="false"
-                    placeholder="#FAF8F2"
                   />
                 </span>
               </label>
@@ -930,21 +1001,7 @@ app.innerHTML = `
       </div>
     </div>
 
-    <div
-      class="removal-toast"
-      data-removal-toast
-      aria-hidden="true"
-      aria-live="polite"
-      inert
-    >
-      <span data-removal-message></span>
-      <button data-removal-undo>撤销</button>
-    </div>
-
-    <div class="quiet-toast" data-toast role="status">
-      <span data-toast-message></span>
-      <button data-toast-action hidden></button>
-    </div>
+    <p class="visually-hidden" data-app-status role="status" aria-live="polite"></p>
   </main>
 `;
 
@@ -965,6 +1022,13 @@ const landingSceneButtons = [
 ];
 const libraryView = queryRequired<HTMLElement>('.library-view');
 const bookHotspots = queryRequired<HTMLElement>('.book-hotspots');
+const librarySceneImage = queryRequired<HTMLImageElement>('[data-library-scene]');
+const libraryCategoryButtons = [
+  ...libraryView.querySelectorAll<HTMLButtonElement>('[data-library-category]'),
+];
+const libraryEmpty = queryRequired<HTMLElement>('[data-library-empty]');
+const libraryEmptyTitle = queryRequired<HTMLElement>('[data-library-empty-title]');
+const libraryEmptyAction = queryRequired<HTMLButtonElement>('[data-library-empty-action]');
 const readerView = queryRequired<HTMLElement>('.reader-view');
 const readerSceneImage = queryRequired<HTMLImageElement>('[data-reader-scene]');
 const readerSurface = queryRequired<HTMLElement>('.reader-surface');
@@ -972,34 +1036,29 @@ const transitionBook = queryRequired<HTMLElement>('.transition-book');
 const transitionCover = queryRequired<HTMLElement>('.transition-cover');
 const transitionTitle = queryRequired<HTMLElement>('[data-transition-title]');
 const bookCopy = queryRequired<HTMLElement>('.book-copy');
-const leftPage = queryRequired<HTMLElement>('[data-left-page]');
-const rightPage = queryRequired<HTMLElement>('[data-right-page]');
-const paginationMeasure = queryRequired<HTMLElement>('[data-pagination-measure]');
-const turnSheet = queryRequired<HTMLElement>('.page-turn-sheet');
-const turnFront = queryRequired<HTMLElement>('[data-turn-front]');
-const turnBack = queryRequired<HTMLElement>('[data-turn-back]');
+const readingDocumentElement = queryRequired<HTMLElement>('[data-reading-document]');
 const readerStatus = queryRequired<HTMLElement>('[data-reader-status]');
-const soundButton = queryRequired<HTMLButtonElement>('[data-sound]');
-const toast = queryRequired<HTMLElement>('[data-toast]');
-const toastMessage = queryRequired<HTMLElement>('[data-toast-message]');
-const toastActionButton = queryRequired<HTMLButtonElement>('[data-toast-action]');
-const removalToast = queryRequired<HTMLElement>('[data-removal-toast]');
-const removalMessage = queryRequired<HTMLElement>('[data-removal-message]');
-const removalUndoButton = queryRequired<HTMLButtonElement>('[data-removal-undo]');
-const importedBookList = queryRequired<HTMLElement>('[data-imported-books]');
+const appStatus = queryRequired<HTMLElement>('[data-app-status]');
 const importInput = queryRequired<HTMLInputElement>('[data-import-input]');
-const libraryLens = queryRequired<HTMLElement>('[data-library-lens]');
-const libraryGrid = queryRequired<HTMLElement>('[data-library-grid]');
-const libraryEmpty = queryRequired<HTMLElement>('[data-library-empty]');
-const libraryCount = queryRequired<HTMLElement>('[data-library-count]');
+const libraryDock = queryRequired<HTMLElement>('.library-dock');
+const returnHomeButton = queryRequired<HTMLButtonElement>('[data-return-home]');
+const libraryPanel = queryRequired<HTMLElement>('[data-library-panel]');
 const librarySearch = queryRequired<HTMLInputElement>('[data-library-search]');
-const libraryOpenButton = queryRequired<HTMLButtonElement>('[data-library-open]');
-const libraryTagLabel = queryRequired<HTMLElement>('[data-library-tag-label]');
-const libraryImportButton = queryRequired<HTMLButtonElement>('[data-library-import]');
-const outlookImage = queryRequired<HTMLImageElement>('[data-outlook-image]');
-const outlookSwitch = queryRequired<HTMLButtonElement>('[data-outlook-switch]');
-const outlookLabel = queryRequired<HTMLElement>('[data-outlook-label]');
-const settingsTrigger = queryRequired<HTMLButtonElement>('[data-settings-trigger]');
+const librarySearchMeta = queryRequired<HTMLElement>('[data-library-search-meta]');
+const libraryActionButtons = [
+  ...libraryView.querySelectorAll<HTMLButtonElement>('[data-library-action]'),
+];
+const libraryImportButton = queryRequired<HTMLButtonElement>(
+  '[data-library-action="import"]',
+);
+const librarySearchButton = queryRequired<HTMLButtonElement>(
+  '[data-library-action="search"]',
+);
+const importProgress = queryRequired<HTMLElement>('[data-import-progress]');
+const importStatus = queryRequired<HTMLElement>('[data-import-status]');
+const importPercent = queryRequired<HTMLElement>('[data-import-percent]');
+const importChooseButton = queryRequired<HTMLButtonElement>('[data-import-choose]');
+const importFeedback = queryRequired<HTMLElement>('[data-import-feedback]');
 const settingsOptions = queryRequired<HTMLFormElement>('[data-settings-options]');
 const readerAppearanceMount = queryRequired<HTMLElement>('[data-reader-appearance-mount]');
 const fontFamilyInput = queryRequired<HTMLInputElement>(
@@ -1008,93 +1067,101 @@ const fontFamilyInput = queryRequired<HTMLInputElement>(
 const fontSizeInput = queryRequired<HTMLInputElement>(
   '[data-appearance-input="fontSize"]',
 );
+const lineHeightInput = queryRequired<HTMLInputElement>(
+  '[data-appearance-input="lineHeight"]',
+);
 const foregroundInput = queryRequired<HTMLInputElement>(
   '[data-appearance-input="foreground"]',
-);
-const backgroundInput = queryRequired<HTMLInputElement>(
-  '[data-appearance-input="background"]',
 );
 const appearanceMessage = queryRequired<HTMLElement>('[data-appearance-message]');
 const appearanceResetButton = queryRequired<HTMLButtonElement>('[data-appearance-reset]');
 const readerTitle = queryRequired<HTMLElement>('[data-reader-title]');
-const progressChapter = queryRequired<HTMLElement>('[data-progress-chapter]');
+const readerMinimap = queryRequired<HTMLElement>('[data-reader-minimap]');
+const readerMinimapBars = queryRequired<HTMLElement>('[data-reader-minimap-bars]');
+const readerMinimapLabel = queryRequired<HTMLElement>('[data-reader-minimap-label]');
+const readerProgress = queryRequired<HTMLElement>('[data-reader-progress]');
 const progressSlider = queryRequired<HTMLInputElement>('[data-progress-slider]');
-const progressLabel = queryRequired<HTMLElement>('[data-progress-label]');
-const bookmarkButton = queryRequired<HTMLButtonElement>('[data-reader-action="bookmark"]');
+const progressPercent = queryRequired<HTMLElement>('[data-progress-percent]');
+const progressBookmarks = queryRequired<HTMLElement>(
+  '[data-reader-progress-bookmarks]',
+);
+const returnButton = queryRequired<HTMLButtonElement>('[data-reader-return]');
+const bookmarkButton = queryRequired<HTMLButtonElement>(
+  '[data-reader-action="bookmark"]',
+);
 const readerPanel = queryRequired<HTMLElement>('[data-reader-panel]');
-const readerPanelTitle = queryRequired<HTMLElement>('[data-reader-panel-title]');
-const contentsList = queryRequired<HTMLElement>('[data-contents-list]');
-const panelActionButtons = [
-  ...readerView.querySelectorAll<HTMLButtonElement>(
-    '[data-reader-action="progress"], [data-reader-action="contents"], '
-      + '[data-reader-action="appearance"]',
-  ),
-];
-const readerChrome = [...readerView.querySelectorAll<HTMLElement>('.reader-chrome')];
+const readerControlSurfaces = [readerMinimap, readerPanel];
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 const APPEARANCE_KEY = 'readerAppearance:v3';
 const PREVIOUS_APPEARANCE_KEY = 'readerAppearance:v2';
 const LEGACY_APPEARANCE_KEY = 'readerAppearance:v1';
 const PROGRESS_KEY = 'readerProgress:v1';
-const BOOKMARKS_KEY = 'readerBookmarks:v1';
+const PINS_KEY = 'readerPins:v1';
 const LAST_BOOK_KEY = 'lastOpenedBook:v1';
-const SOUND_KEY = 'paperSound:v1';
 const MIN_FONT_SIZE = 12;
 const MAX_FONT_SIZE = 32;
+const MIN_LINE_HEIGHT = 1.2;
+const MAX_LINE_HEIGHT = 2.2;
 const defaultAppearance: ReaderAppearance = {
   fontFamily: 'Songti SC',
   fontSize: 17,
+  lineHeight: 1.75,
   foreground: '#252b2d',
-  background: '#faf8f2',
 };
 
 let mode: AppMode = 'landing';
 let activeBook = books[0];
 let activeTrigger: HTMLButtonElement | null = null;
-let spreadIndex = 0;
-let turnInProgress = false;
-let soundEnabled = true;
-let audioContext: AudioContext | undefined;
-let audioMaster: GainNode | undefined;
-let noiseBuffer: AudioBuffer | undefined;
-let toastTimer: number | undefined;
-let removalTimer: number | undefined;
+let activePageSound: HTMLAudioElement | null = null;
+let paperAudioWarningShown = false;
+const lastPageSoundIndex: Record<Direction, number> = {
+  forward: -1,
+  backward: -1,
+};
 let controlsTimer: number | undefined;
-let closePending = false;
-let pendingDirection: Direction | null = null;
 let activeAnimations: Animation[] = [];
 let importedBooks: ImportedBookMetadata[] = [];
 let openRequestRevision = 0;
 let loadingBookId: string | null = null;
-let paginationGeneration = 0;
-let layoutRevision = 0;
-let paginationInProgress = false;
-let pendingLayout = false;
-let resizeTimer: number | undefined;
+let readingDocumentPreparing = false;
 let appearanceInputTimer: number | undefined;
-let observedLayoutSignature = '';
+let scrollProgressFrame: number | undefined;
+let scrollProgressSaveTimer: number | undefined;
+let minimapMotionFrame: number | undefined;
+let progressScrubbing = false;
 let activePanel: ReaderPanel | null = null;
 let panelInvoker: HTMLElement | null = null;
 let activeLandingPanel: LandingPanel | null = null;
 let landingPanelInvoker: HTMLElement | null = null;
+let activeLibraryPanel: LibraryPanel | null = null;
+let libraryPanelInvoker: HTMLElement | null = null;
+let matchedLibraryBooks: Book[] = [];
+let activeLibraryCategory: LibraryCategory = 'all';
+let libraryOpenInProgress = false;
+let importInProgress = false;
+let importProgressTimer: number | undefined;
+let libraryIdleTimer: number | undefined;
+let libraryReturnInProgress = false;
 let landingSceneIndex = initialLandingSceneIndex;
 let landingSceneRevision = 0;
-let outlookSceneIndex = initialOutlookSceneIndex;
-let outlookSceneRevision = 0;
 let lastOpenedBookId = localStorage.getItem(LAST_BOOK_KEY) ?? books[0].id;
 let appearance = { ...defaultAppearance };
 let readingProgress: Record<string, number> = {};
-let readerBookmarks: ReaderBookmarks = {};
+let readerPins: ReaderPins = {};
 let stopThinkingOrb: () => void = () => undefined;
 const pendingRemovals = new Map<string, ImportedBookMetadata>();
-const paginationCache = new Map<string, ReadingPage[]>();
 const loadedBookCache = new Map<string, Book>();
-const MAX_PAGINATION_CACHE_ENTRIES = 8;
 const MAX_LOADED_BOOK_CACHE_ENTRIES = 3;
+const LIBRARY_IDLE_RETURN_MS = 5 * 60 * 1000;
 
 const nextFrame = () =>
   new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+const afterPaint = () =>
+  new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
 
 const setLandingScene = (nextIndex: number) => {
   const scene = landingScenes[nextIndex];
@@ -1122,6 +1189,10 @@ const setLandingScene = (nextIndex: number) => {
       landingSceneImage.style.objectPosition = scene.position;
       landingSceneImage.alt = `首页背景：${scene.label}`;
       landingView.dataset.uiInk = scene.ink;
+      librarySceneImage.src = scene.src;
+      librarySceneImage.style.objectPosition = scene.position;
+      librarySceneImage.alt = `书架背景：${scene.label}`;
+      libraryView.dataset.uiInk = scene.ink;
       readerSceneImage.src = scene.src;
       readerSceneImage.style.objectPosition = scene.position;
       landingSceneButtons.forEach((button) => {
@@ -1137,42 +1208,6 @@ const setLandingScene = (nextIndex: number) => {
   preload.src = scene.src;
 };
 
-const setOutlookScene = (nextIndex: number) => {
-  const normalizedIndex = (
-    (nextIndex % outlookScenes.length) + outlookScenes.length
-  ) % outlookScenes.length;
-  const nextScene = outlookScenes[normalizedIndex];
-
-  if (!nextScene || normalizedIndex === outlookSceneIndex) {
-    return;
-  }
-
-  const revision = ++outlookSceneRevision;
-  const preload = new Image();
-
-  preload.addEventListener('load', () => {
-    if (revision !== outlookSceneRevision) {
-      return;
-    }
-
-    outlookImage.classList.add('is-changing');
-    window.setTimeout(() => {
-      if (revision !== outlookSceneRevision) {
-        return;
-      }
-
-      outlookSceneIndex = normalizedIndex;
-      outlookImage.src = nextScene.src;
-      outlookImage.style.objectPosition = nextScene.position;
-      outlookLabel.textContent = nextScene.label;
-      outlookSwitch.setAttribute('aria-label', `切换窗外景色，当前为${nextScene.label}`);
-      localStorage.setItem(OUTLOOK_SCENE_KEY, nextScene.id);
-      requestAnimationFrame(() => outlookImage.classList.remove('is-changing'));
-    }, 150);
-  }, { once: true });
-  preload.src = nextScene.src;
-};
-
 const createTextElement = <K extends keyof HTMLElementTagNameMap>(
   tagName: K,
   className: string,
@@ -1185,67 +1220,408 @@ const createTextElement = <K extends keyof HTMLElementTagNameMap>(
   return element;
 };
 
-const createPageElement = (page: SourcePage, pageNumber: number) => {
+const AUTO_HIGHLIGHT_LANGUAGES = [
+  'bash',
+  'c',
+  'cpp',
+  'css',
+  'go',
+  'java',
+  'javascript',
+  'json',
+  'markdown',
+  'python',
+  'rust',
+  'sql',
+  'typescript',
+  'xml',
+  'yaml',
+];
+const highlightedCodeCache = new Map<string, string>();
+
+const highlightCode = (code: HTMLElement, source: string, declaredLanguage: string) => {
+  const language = declaredLanguage.toLowerCase();
+  const cacheKey = `${language}\0${source}`;
+  const cached = highlightedCodeCache.get(cacheKey);
+
+  code.className = 'hljs';
+  if (cached !== undefined) {
+    code.innerHTML = cached;
+    return;
+  }
+  if (source.length > 20_000) {
+    code.textContent = source;
+    return;
+  }
+
+  const highlighted = language && hljs.getLanguage(language)
+    ? hljs.highlight(source, { language, ignoreIllegals: true }).value
+    : source.trim().length >= 24
+      ? hljs.highlightAuto(source, AUTO_HIGHLIGHT_LANGUAGES).value
+      : undefined;
+
+  if (highlighted === undefined) {
+    code.textContent = source;
+    return;
+  }
+  code.innerHTML = highlighted;
+  highlightedCodeCache.set(cacheKey, highlighted);
+  if (highlightedCodeCache.size > 128) {
+    const oldestKey = highlightedCodeCache.keys().next().value as string | undefined;
+
+    if (oldestKey) {
+      highlightedCodeCache.delete(oldestKey);
+    }
+  }
+};
+
+const createMathElement = (source: string, displayMode: boolean) => {
+  const element = document.createElement(displayMode ? 'div' : 'span');
+
+  element.className = displayMode ? 'markdown-math-block' : 'markdown-math-inline';
+  katex.render(source, element, {
+    displayMode,
+    errorColor: 'currentColor',
+    maxExpand: 1_000,
+    maxSize: 20,
+    output: 'htmlAndMathml',
+    strict: 'ignore',
+    throwOnError: false,
+    trust: false,
+  });
+  return element;
+};
+
+const sliceInlineRuns = (
+  runs: readonly ImportedInlineRun[],
+  start: number,
+  length: number,
+) => {
+  const end = start + length;
+  const sliced: ImportedInlineRun[] = [];
+  let offset = 0;
+
+  runs.forEach((run) => {
+    const runEnd = offset + run.value.length;
+    const overlapStart = Math.max(start, offset);
+    const overlapEnd = Math.min(end, runEnd);
+
+    if (overlapStart < overlapEnd) {
+      sliced.push({
+        kind: run.kind,
+        value: run.value.slice(overlapStart - offset, overlapEnd - offset),
+        ...(run.marks ? { marks: run.marks } : {}),
+      });
+    }
+    offset = runEnd;
+  });
+  return sliced;
+};
+
+const appendInlineRuns = (
+  target: HTMLElement,
+  runs: readonly ImportedInlineRun[],
+) => {
+  runs.forEach((run) => {
+    if (run.kind === 'break') {
+      target.append(document.createElement('br'));
+      return;
+    }
+    let node: Node = run.kind === 'text'
+      ? document.createTextNode(run.value)
+      : run.kind === 'code'
+        ? createTextElement(
+            'code',
+            run.value.includes('\n')
+              ? 'markdown-inline-code markdown-inline-code-multiline'
+              : 'markdown-inline-code',
+            run.value,
+          )
+        : createMathElement(run.value, false);
+
+    (run.marks ?? []).forEach((mark) => {
+      const wrapper = document.createElement(
+        mark === 'strong' ? 'strong' : mark === 'emphasis' ? 'em' : 's',
+      );
+
+      wrapper.append(node);
+      node = wrapper;
+    });
+    target.append(node);
+  });
+};
+
+const appendInlineContent = (
+  target: HTMLElement,
+  segment: TextSegment,
+  format?: ImportedBookFormat,
+) => {
+  const inlines = format && 'inlines' in format ? format.inlines : undefined;
+  if (!inlines) {
+    target.append(document.createTextNode(segment.text));
+    return;
+  }
+
+  const paragraphOffset = segment.startOffset - segment.paragraphStartOffset;
+  appendInlineRuns(
+    target,
+    sliceInlineRuns(inlines, paragraphOffset, segment.text.length),
+  );
+};
+
+const createMarkdownTable = (
+  segments: TextSegment[],
+  formats: Extract<ImportedBookFormat, { kind: 'table-row' }>[],
+) => {
+  const wrapper = document.createElement('div');
+  const table = document.createElement('table');
+  const head = document.createElement('thead');
+  const body = document.createElement('tbody');
+
+  wrapper.className = 'markdown-table-wrap';
+  table.className = 'markdown-table';
+  if (segments[0]) {
+    wrapper.dataset.textOffset = String(segments[0].startOffset);
+  }
+  segments.forEach((segment, rowIndex) => {
+    const format = formats[rowIndex];
+    const row = document.createElement('tr');
+
+    row.dataset.textOffset = String(segment.startOffset);
+    format.cells.forEach((value, cellIndex) => {
+      const cell = document.createElement(format.header ? 'th' : 'td');
+      const alignment = format.alignments[cellIndex] ?? 'left';
+      const inlines = format.cellInlines?.[cellIndex];
+
+      if (inlines) {
+        appendInlineRuns(cell, inlines);
+      } else {
+        cell.textContent = value;
+      }
+      cell.dataset.align = alignment;
+      if (format.header) {
+        cell.scope = 'col';
+      }
+      row.append(cell);
+    });
+    (format.header ? head : body).append(row);
+    if (segment.continued) {
+      row.classList.add('is-continued');
+    }
+  });
+  if (head.children.length) {
+    table.append(head);
+  }
+  if (body.children.length) {
+    table.append(body);
+  }
+  wrapper.append(table);
+  return wrapper;
+};
+
+type MarkdownListFormat = Extract<ImportedBookFormat, { kind: 'list-item' }>;
+type MarkdownListEntry = {
+  segment: TextSegment;
+  format: MarkdownListFormat;
+};
+
+const createMarkdownListGroup = (entries: MarkdownListEntry[]) => {
+  const fragment = document.createDocumentFragment();
+
+  const appendLevel = (
+    parent: DocumentFragment | HTMLLIElement,
+    startIndex: number,
+    depth: number,
+  ) => {
+    let index = startIndex;
+
+    while (index < entries.length && entries[index].format.depth === depth) {
+      const ordered = entries[index].format.ordered;
+      const list = document.createElement(ordered ? 'ol' : 'ul');
+
+      list.className = 'markdown-list';
+      list.dataset.depth = String(depth);
+      list.dataset.textOffset = String(entries[index].segment.startOffset);
+      if (ordered) {
+        (list as HTMLOListElement).start = entries[index].format.ordinal;
+      }
+
+      while (
+        index < entries.length
+        && entries[index].format.depth === depth
+        && entries[index].format.ordered === ordered
+      ) {
+        const { segment, format } = entries[index];
+        const item = document.createElement('li');
+
+        item.dataset.textOffset = String(segment.startOffset);
+        item.classList.toggle('is-continued', Boolean(segment.continued));
+        if (ordered) {
+          item.value = format.ordinal;
+        }
+        if (format.checked !== undefined) {
+          const marker = createTextElement(
+            'span',
+            'markdown-task-marker',
+            format.checked ? '✓' : '',
+          );
+
+          marker.setAttribute('role', 'checkbox');
+          marker.setAttribute('aria-checked', String(format.checked));
+          item.classList.add('is-task');
+          item.append(marker);
+        }
+        appendInlineContent(item, segment, format);
+        list.append(item);
+        index += 1;
+
+        if (index < entries.length && entries[index].format.depth > depth) {
+          index = appendLevel(item, index, entries[index].format.depth);
+        }
+        if (index < entries.length && entries[index].format.depth < depth) {
+          break;
+        }
+      }
+      parent.append(list);
+      if (index < entries.length && entries[index].format.depth < depth) {
+        break;
+      }
+    }
+    return index;
+  };
+
+  let index = 0;
+  while (index < entries.length) {
+    index = appendLevel(fragment, index, entries[index].format.depth);
+  }
+  return fragment;
+};
+
+const appendStructuredPageContent = (pageBody: HTMLElement, page: SourcePage) => {
+  const segments = page.segments ?? createTextSegments(page.paragraphs);
+  const formatByParagraph = new Map(
+    (page.formats ?? []).map((format) => [format.paragraphIndex, format]),
+  );
+  let index = 0;
+
+  while (index < segments.length) {
+    const segment = segments[index];
+    const format = formatByParagraph.get(segment.paragraphIndex);
+
+    if (!format) {
+      const paragraph = createTextElement('p', '', segment.text);
+
+      paragraph.dataset.textOffset = String(segment.startOffset);
+      pageBody.append(paragraph);
+      index += 1;
+      continue;
+    }
+    if (format.kind === 'list-item') {
+      const entries: MarkdownListEntry[] = [];
+
+      while (index < segments.length) {
+        const itemSegment = segments[index];
+        const itemFormat = formatByParagraph.get(itemSegment.paragraphIndex);
+
+        if (
+          itemFormat?.kind !== 'list-item'
+          || itemFormat.groupId !== format.groupId
+        ) {
+          break;
+        }
+        entries.push({ segment: itemSegment, format: itemFormat });
+        index += 1;
+      }
+      pageBody.append(createMarkdownListGroup(entries));
+      continue;
+    }
+    if (format.kind === 'table-row') {
+      const tableSegments: TextSegment[] = [];
+      const tableFormats: Extract<ImportedBookFormat, { kind: 'table-row' }>[] = [];
+
+      while (index < segments.length) {
+        const rowSegment = segments[index];
+        const rowFormat = formatByParagraph.get(rowSegment.paragraphIndex);
+
+        if (rowFormat?.kind !== 'table-row' || rowFormat.groupId !== format.groupId) {
+          break;
+        }
+        tableSegments.push(rowSegment);
+        tableFormats.push(rowFormat);
+        index += 1;
+      }
+      pageBody.append(createMarkdownTable(tableSegments, tableFormats));
+      continue;
+    }
+    if (format.kind === 'heading') {
+      const level = Math.min(Math.max(format.level, 2), 6) as 2 | 3 | 4 | 5 | 6;
+      const heading = document.createElement(`h${level}`);
+
+      heading.className = 'markdown-heading';
+      heading.dataset.textOffset = String(segment.startOffset);
+      appendInlineContent(heading, segment, format);
+      pageBody.append(heading);
+    } else if (format.kind === 'blockquote') {
+      const quote = document.createElement('blockquote');
+
+      quote.className = 'markdown-blockquote';
+      quote.dataset.textOffset = String(segment.startOffset);
+      appendInlineContent(quote, segment, format);
+      pageBody.append(quote);
+    } else if (format.kind === 'code-block') {
+      const code = document.createElement('code');
+      const pre = document.createElement('pre');
+
+      pre.className = 'markdown-code';
+      pre.dataset.textOffset = String(segment.startOffset);
+      if (format.language) {
+        pre.dataset.language = format.language;
+      }
+      highlightCode(code, segment.text, format.language);
+      pre.append(code);
+      pageBody.append(pre);
+    } else if (format.kind === 'math-block') {
+      const math = createMathElement(segment.text, true);
+
+      math.dataset.textOffset = String(segment.startOffset);
+      pageBody.append(math);
+    } else if (format.kind === 'rich-text') {
+      const paragraph = document.createElement('p');
+
+      paragraph.dataset.textOffset = String(segment.startOffset);
+      appendInlineContent(paragraph, segment, format);
+      pageBody.append(paragraph);
+    } else {
+      const rule = document.createElement('hr');
+
+      rule.className = 'markdown-rule';
+      rule.dataset.textOffset = String(segment.startOffset);
+      pageBody.append(rule);
+    }
+    index += 1;
+  }
+};
+
+const createPageElement = (page: SourcePage) => {
   const pageInner = document.createElement('div');
   const pageBody = document.createElement('div');
 
   pageInner.className = 'page-inner';
+  if (page.sourceFormat) {
+    pageInner.dataset.sourceFormat = page.sourceFormat;
+  }
   pageBody.className = 'page-body';
 
-  page.paragraphs.forEach((paragraph) => {
-    pageBody.append(createTextElement('p', '', paragraph));
-  });
+  appendStructuredPageContent(pageBody, page);
   pageInner.append(pageBody);
-  pageInner.append(createTextElement('span', 'page-number', String(pageNumber)));
   return pageInner;
 };
 
-const mountPage = (target: HTMLElement, page: SourcePage, pageNumber: number) => {
-  target.replaceChildren(createPageElement(page, pageNumber));
-};
-
-const mountReadingPage = (
-  target: HTMLElement,
-  page: ReadingPage,
-  pageNumber: number,
-) => {
-  const blank = page.paragraphs.length === 0 && page.startOffset === page.endOffset;
-
-  target.classList.toggle('is-blank-page', blank);
-  target.setAttribute('aria-hidden', String(blank));
-  if (blank) {
-    target.replaceChildren();
-  } else {
-    mountPage(target, page, pageNumber);
-  }
-};
-
-const pairPages = (nextPages: ReadingPage[]) => {
-  const pairedPages = [...nextPages];
-  const lastOffset = pairedPages.at(-1)?.endOffset ?? 0;
-
-  if (pairedPages.length % 2 !== 0) {
-    pairedPages.push(emptyPage(lastOffset));
-  }
-
-  const nextSpreads: Array<[ReadingPage, ReadingPage]> = [];
-  for (let index = 0; index < pairedPages.length; index += 2) {
-    nextSpreads.push([pairedPages[index], pairedPages[index + 1]]);
-  }
-  return nextSpreads;
-};
-
-const renderSpread = () => {
-  const [left, right] = spreads[spreadIndex];
-  const firstPage = spreadIndex * 2 + 1;
-
-  mountReadingPage(leftPage, left, firstPage);
-  mountReadingPage(rightPage, right, firstPage + 1);
-  pageBackButton.disabled = spreadIndex === 0;
-  pageForwardButton.disabled = spreadIndex === spreads.length - 1;
-  pageBackZone.disabled = pageBackButton.disabled;
-  pageForwardZone.disabled = pageForwardButton.disabled;
+const renderReadingDocument = () => {
+  readingLayoutPoints = [];
+  readingDocumentElement.replaceChildren(createPageElement(readingDocument));
   updateReaderNavigation();
+  renderProgressBookmarks();
 };
 
 const normalizeHexColor = (value: unknown): string | null => {
@@ -1312,18 +1688,6 @@ const readAppearance = (): ReaderAppearance => {
         ?? localStorage.getItem(LEGACY_APPEARANCE_KEY)
         ?? '{}',
     ) as StoredReaderAppearance;
-    const legacyPaper = stored.paper ?? 'warm';
-    const legacyBackgrounds = stored.theme === 'night'
-      ? {
-          warm: '#211f1c',
-          neutral: '#1d2223',
-          sage: '#1b2421',
-        }
-      : {
-          warm: defaultAppearance.background,
-          neutral: '#f4f4ef',
-          sage: '#eaf0e9',
-        };
     const fontFamily = isFontFamily(stored.fontFamily)
       ? stored.fontFamily.trim()
       : stored.font === 'sans'
@@ -1338,14 +1702,21 @@ const readAppearance = (): ReaderAppearance => {
       && stored.fontSize <= MAX_FONT_SIZE
         ? stored.fontSize
         : defaultAppearance.fontSize;
+    const lineHeight = typeof stored.lineHeight === 'number'
+      && Number.isFinite(stored.lineHeight)
+      && stored.lineHeight >= MIN_LINE_HEIGHT
+      && stored.lineHeight <= MAX_LINE_HEIGHT
+        ? stored.lineHeight
+        : defaultAppearance.lineHeight;
     const foreground = normalizeHexColor(stored.foreground)
-      ?? (stored.theme === 'night'
-        ? '#d9dad3'
-        : defaultAppearance.foreground);
-    const background = normalizeHexColor(stored.background)
-      ?? legacyBackgrounds[legacyPaper];
+      ?? defaultAppearance.foreground;
 
-    const nextAppearance = { fontFamily, fontSize, foreground, background };
+    const nextAppearance = {
+      fontFamily,
+      fontSize,
+      lineHeight,
+      foreground,
+    };
 
     if (currentRaw !== JSON.stringify(nextAppearance)) {
       localStorage.setItem(APPEARANCE_KEY, JSON.stringify(nextAppearance));
@@ -1375,9 +1746,9 @@ const readProgress = () => {
   }
 };
 
-const readBookmarks = (): ReaderBookmarks => {
+const readPins = (): ReaderPins => {
   try {
-    const stored = JSON.parse(localStorage.getItem(BOOKMARKS_KEY) ?? '{}') as unknown;
+    const stored = JSON.parse(localStorage.getItem(PINS_KEY) ?? '{}') as unknown;
 
     if (!stored || typeof stored !== 'object' || Array.isArray(stored)) {
       return {};
@@ -1385,11 +1756,11 @@ const readBookmarks = (): ReaderBookmarks => {
 
     return Object.fromEntries(
       Object.entries(stored)
-        .filter((entry): entry is [string, number[]] => (
-          Array.isArray(entry[1])
-          && entry[1].every((anchor) => (
-            typeof anchor === 'number' && Number.isFinite(anchor) && anchor >= 0
-          ))
+        .filter((entry): entry is [string, number] => (
+          typeof entry[1] === 'number'
+          && Number.isFinite(entry[1])
+          && entry[1] >= 0
+          && entry[1] <= 1
         )),
     );
   } catch {
@@ -1397,14 +1768,9 @@ const readBookmarks = (): ReaderBookmarks => {
   }
 };
 
-const readSoundEnabled = () => localStorage.getItem(SOUND_KEY) !== 'false';
-
-const updateColorPreview = (
-  input: HTMLInputElement,
-  setting: 'foreground' | 'background',
-) => {
-  const preview = queryRequired<HTMLElement>(`[data-color-preview="${setting}"]`);
-  const value = input.value.trim();
+const updateFontColorPreview = () => {
+  const preview = queryRequired<HTMLElement>('[data-color-preview="foreground"]');
+  const value = foregroundInput.value.trim();
   const normalized = normalizeHexColor(value);
 
   preview.style.backgroundColor = normalized ?? 'transparent';
@@ -1414,10 +1780,9 @@ const updateColorPreview = (
 const updateAppearanceControls = () => {
   fontFamilyInput.value = appearance.fontFamily;
   fontSizeInput.value = String(appearance.fontSize);
+  lineHeightInput.value = String(appearance.lineHeight);
   foregroundInput.value = appearance.foreground.toUpperCase();
-  backgroundInput.value = appearance.background.toUpperCase();
-  updateColorPreview(foregroundInput, 'foreground');
-  updateColorPreview(backgroundInput, 'background');
+  updateFontColorPreview();
 };
 
 const applyAppearance = (
@@ -1425,14 +1790,16 @@ const applyAppearance = (
   persist = true,
   syncControls = true,
 ) => {
+  const readingAnchor = mode === 'reading' ? getCurrentAnchor() : null;
+
   appearance = nextAppearance;
   const fontFamily = toCssFontFamily(appearance.fontFamily);
 
   shell.style.setProperty('--reader-font', fontFamily);
   shell.style.setProperty('--reader-ui-font', fontFamily);
   shell.style.setProperty('--reader-font-size', `${appearance.fontSize}px`);
+  readerView.style.setProperty('--reader-line-height', String(appearance.lineHeight));
   readerView.style.setProperty('--reader-ink', appearance.foreground);
-  readerView.style.setProperty('--reader-paper-background', appearance.background);
   if (syncControls) {
     updateAppearanceControls();
   }
@@ -1440,38 +1807,51 @@ const applyAppearance = (
   if (persist) {
     localStorage.setItem(APPEARANCE_KEY, JSON.stringify(appearance));
   }
+  if (readingAnchor !== null) {
+    void afterPaint().then(() => {
+      refreshReadingLayout();
+      renderReaderMinimapBars();
+      scrollToAnchor(readingAnchor, 'auto');
+      updateReaderNavigation();
+      renderProgressBookmarks();
+    });
+  }
 };
 
 const readAppearanceForm = (): ReaderAppearance | null => {
   const fontFamily = fontFamilyInput.value.trim();
   const fontSize = Number(fontSizeInput.value);
+  const lineHeight = Number(lineHeightInput.value);
   const foreground = normalizeHexColor(foregroundInput.value);
-  const background = normalizeHexColor(backgroundInput.value);
   const validFont = isFontFamily(fontFamily);
   const validSize = Number.isFinite(fontSize)
     && Number.isInteger(fontSize)
     && fontSize >= MIN_FONT_SIZE
     && fontSize <= MAX_FONT_SIZE;
+  const validLineHeight = Number.isFinite(lineHeight)
+    && lineHeight >= MIN_LINE_HEIGHT
+    && lineHeight <= MAX_LINE_HEIGHT;
   const validForeground = Boolean(foreground);
-  const validBackground = Boolean(background);
 
   fontFamilyInput.setAttribute('aria-invalid', String(!validFont));
   fontSizeInput.setAttribute('aria-invalid', String(!validSize));
+  lineHeightInput.setAttribute('aria-invalid', String(!validLineHeight));
   foregroundInput.setAttribute('aria-invalid', String(!validForeground));
-  backgroundInput.setAttribute('aria-invalid', String(!validBackground));
 
   if (!validFont) {
     appearanceMessage.textContent = '请输入有效的字体名称';
   } else if (!validSize) {
     appearanceMessage.textContent = `字号需在 ${MIN_FONT_SIZE}–${MAX_FONT_SIZE} px`;
-  } else if (!validForeground || !validBackground) {
-    appearanceMessage.textContent = '颜色请使用 #RGB 或 #RRGGBB';
+  } else if (!validLineHeight) {
+    appearanceMessage.textContent = `行距需在 ${MIN_LINE_HEIGHT}–${MAX_LINE_HEIGHT}`;
+  } else if (!validForeground) {
+    appearanceMessage.textContent = '字体色请使用 #RGB 或 #RRGGBB';
   } else {
     appearanceMessage.textContent = '';
   }
 
-  return validFont && validSize && foreground && background
-    ? { fontFamily, fontSize, foreground, background }
+  return validFont && validSize && validLineHeight && foreground
+    ? { fontFamily, fontSize, lineHeight, foreground }
     : null;
 };
 
@@ -1526,41 +1906,219 @@ const setLandingPanel = (
   }
 };
 
-const getCurrentAnchor = () => spreads[spreadIndex]?.[0]?.startOffset ?? 0;
+const getScrollRange = () => Math.max(
+  readerSurface.scrollHeight - readerSurface.clientHeight,
+  0,
+);
+
+const getReadingBlocks = () => [
+  ...readingDocumentElement.querySelectorAll<HTMLElement>('[data-text-offset]'),
+];
+
+type ReadingLayoutPoint = {
+  anchor: number;
+  top: number;
+};
+
+let readingLayoutPoints: ReadingLayoutPoint[] = [];
+
+const refreshReadingLayout = () => {
+  const surfaceBounds = readerSurface.getBoundingClientRect();
+
+  readingLayoutPoints = getReadingBlocks().flatMap((element) => {
+    const anchor = Number(element.dataset.textOffset);
+
+    if (!Number.isFinite(anchor)) {
+      return [];
+    }
+    return [{
+      anchor,
+      top: readerSurface.scrollTop
+        + element.getBoundingClientRect().top
+        - surfaceBounds.top,
+    }];
+  });
+};
+
+const findLayoutPoint = (value: number, key: keyof ReadingLayoutPoint) => {
+  let low = 0;
+  let high = readingLayoutPoints.length - 1;
+  let match: ReadingLayoutPoint | undefined;
+
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const point = readingLayoutPoints[middle];
+
+    if (point[key] <= value) {
+      match = point;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return match ?? readingLayoutPoints[0];
+};
+
+const getAnchorScrollTop = (anchor: number) => {
+  const range = getScrollRange();
+
+  if (anchor >= readingDocument.endOffset) {
+    return range;
+  }
+  const point = findLayoutPoint(anchor, 'anchor');
+  if (!point) {
+    return 0;
+  }
+  const top = point.top - Math.min(48, readerSurface.clientHeight * 0.08);
+
+  return Math.max(0, Math.min(range, top));
+};
+
+const scrollToAnchor = (
+  anchor: number,
+  behavior: ScrollBehavior = reducedMotion.matches ? 'auto' : 'smooth',
+) => {
+  readerSurface.scrollTo({
+    top: getAnchorScrollTop(anchor),
+    behavior,
+  });
+};
+
+const getCurrentAnchor = () => {
+  const range = getScrollRange();
+
+  if (range === 0) {
+    return readingDocument.endOffset;
+  }
+  if (range > 0 && readerSurface.scrollTop >= range - 1) {
+    return readingDocument.endOffset;
+  }
+  const readingLine = readerSurface.scrollTop
+    + Math.min(48, readerSurface.clientHeight * 0.08);
+
+  return findLayoutPoint(readingLine, 'top')?.anchor ?? readingDocument.startOffset;
+};
 
 const getBookLength = (book: Book) => getBookParagraphs(book)
   .reduce((length, paragraph) => length + paragraph.length + 1, 0);
 
+const setSegmentedProgress = (
+  root: HTMLElement,
+  label: HTMLElement,
+  value: number,
+) => {
+  const percent = Math.max(0, Math.min(100, value));
+
+  root.style.setProperty('--progress', `${percent.toFixed(3)}%`);
+  root.classList.toggle('is-empty', percent === 0);
+  label.textContent = `${Math.round(percent)}%`;
+};
+
+const setImportPresentation = (importing: boolean) => {
+  importChooseButton.hidden = importing;
+  importFeedback.hidden = !importing;
+};
+
+const MINIMAP_BAR_COUNT = 32;
+
+const renderReaderMinimapBars = () => {
+  const scrollRange = getScrollRange();
+  const chapters = getChapterEntries(activeBook).map((chapter) => ({
+    title: chapter.title,
+    position: scrollRange > 0
+      ? getAnchorScrollTop(chapter.anchor) / scrollRange
+      : chapter.anchor / Math.max(getBookLength(activeBook), 1),
+  }));
+  const bars = Array.from({ length: MINIMAP_BAR_COUNT }, (_, index) => {
+    const ratio = index / (MINIMAP_BAR_COUNT - 1);
+    const chapter = chapters.findLast((entry) => entry.position <= ratio);
+    const bar = document.createElement('span');
+
+    bar.className = 'reader-minimap-bar';
+    bar.dataset.progress = String(ratio);
+    bar.dataset.title = chapter?.title ?? activeBook.title;
+    return bar;
+  });
+
+  readerMinimapBars.replaceChildren(...bars);
+};
+
+const updateMinimapBars = (ratio: number) => {
+  const bars = readerMinimapBars.querySelectorAll<HTMLElement>(
+    '.reader-minimap-bar',
+  );
+  let closestBar: HTMLElement | null = null;
+  let closestDistance = Number.POSITIVE_INFINITY;
+
+  bars.forEach((bar) => {
+    const barRatio = Number(bar.dataset.progress);
+    const distance = Math.abs(barRatio - ratio);
+
+    bar.classList.toggle('is-read', barRatio <= ratio);
+    if (distance < closestDistance) {
+      closestBar = bar;
+      closestDistance = distance;
+    }
+  });
+  bars.forEach((bar) => bar.classList.toggle('is-current', bar === closestBar));
+};
+
+const renderProgressBookmarks = () => {
+  const pinnedRatio = readerPins[activeBook.id];
+  const markers = typeof pinnedRatio === 'number' ? [pinnedRatio].map((ratio) => {
+    const marker = document.createElement('button');
+    const position = ratio * 100;
+
+    marker.className = 'reader-progress-bookmark';
+    marker.type = 'button';
+    marker.textContent = '📌';
+    marker.disabled = readingDocumentPreparing;
+    marker.style.setProperty('--bookmark-position', `${position.toFixed(3)}%`);
+    marker.setAttribute('aria-label', `跳到 Pin，约 ${Math.round(position)}%`);
+    marker.addEventListener('click', () => {
+      readerSurface.scrollTo({
+        top: getScrollRange() * ratio,
+        behavior: reducedMotion.matches ? 'auto' : 'smooth',
+      });
+      setReaderControls(true);
+    });
+    return marker;
+  }) : [];
+
+  progressBookmarks.replaceChildren(...markers);
+};
+
 function updateReaderNavigation() {
-  const firstPage = spreadIndex * 2 + 1;
-  const lastPage = Math.min(firstPage + 1, pages.length);
-  const [left, right] = spreads[spreadIndex];
-  const visibleEnd = Math.max(left.endOffset, right.endOffset);
-  const bookLength = Math.max(getBookLength(activeBook), 1);
-  const percent = !paginationInProgress && spreadIndex === spreads.length - 1
-    ? 100
-    : Math.min(99, Math.round(visibleEnd / bookLength * 100));
-  const bookmarked = (readerBookmarks[activeBook.id] ?? []).some((anchor) => (
-    anchor >= left.startOffset && anchor < visibleEnd
-  ));
-  const pageRange = firstPage === lastPage ? `${firstPage}` : `${firstPage}–${lastPage}`;
+  const scrollRange = getScrollRange();
+  const ratio = scrollRange > 0
+    ? readerSurface.scrollTop / scrollRange
+    : readingDocument.endOffset > 0 ? 1 : 0;
+  const percent = ratio * 100;
+  const pinnedRatio = readerPins[activeBook.id];
+  const pinnedHere = typeof pinnedRatio === 'number'
+    && Math.abs(pinnedRatio - ratio) <= 0.005;
 
   readerTitle.textContent = activeBook.title;
-  progressChapter.textContent = activeBook.chapterTitle ?? activeBook.title;
-  progressSlider.max = String(Math.max(spreads.length - 1, 0));
-  progressSlider.value = String(Math.min(spreadIndex, spreads.length - 1));
-  progressSlider.disabled = paginationInProgress || spreads.length <= 1;
+  progressSlider.min = '0';
+  progressSlider.max = '100';
+  progressSlider.step = '0.1';
+  if (!progressScrubbing) {
+    progressSlider.value = String(Math.max(0, Math.min(100, percent)));
+  }
+  progressSlider.disabled = readingDocumentPreparing || scrollRange === 0;
   progressSlider.setAttribute(
     'aria-valuetext',
-    paginationInProgress
-      ? `${percent}%，第 ${pageRange} 页，余下书页正在整理`
-      : `${percent}%，第 ${pageRange} 页，共 ${pages.length} 页`,
+    readingDocumentPreparing
+      ? '正文正在载入'
+      : `${Math.round(percent)}%`,
   );
-  progressLabel.textContent = paginationInProgress
-    ? `${percent}% · ${pageRange} · 整理中`
-    : `${percent}% · ${pageRange} / ${pages.length}`;
-  bookmarkButton.setAttribute('aria-pressed', String(bookmarked));
-  const bookmarkLabel = bookmarked ? '移除当前书签' : '添加当前书签';
+  setSegmentedProgress(readerProgress, progressPercent, percent);
+  updateMinimapBars(ratio);
+  bookmarkButton.setAttribute('aria-pressed', String(typeof pinnedRatio === 'number'));
+  const bookmarkLabel = typeof pinnedRatio !== 'number'
+    ? '固定当前阅读位置'
+    : pinnedHere ? '移除阅读标记' : '更新固定位置';
+
   bookmarkButton.setAttribute('aria-label', bookmarkLabel);
   bookmarkButton.title = bookmarkLabel;
 }
@@ -1569,9 +2127,8 @@ const scheduleReaderControlsHide = () => {
   window.clearTimeout(controlsTimer);
   if (
     mode !== 'reading'
-    || activePanel
-    || readerChrome.some((chrome) => (
-      chrome.matches(':hover') || chrome.contains(document.activeElement)
+    || readerControlSurfaces.some((surface) => (
+      surface.matches(':hover') || surface.contains(document.activeElement)
     ))
   ) {
     return;
@@ -1579,66 +2136,49 @@ const scheduleReaderControlsHide = () => {
 
   controlsTimer = window.setTimeout(() => {
     readerView.dataset.controls = 'quiet';
-  }, 3200);
+  }, 180);
 };
 
-const setReaderControls = (visible: boolean, persistent = false) => {
+const setReaderControls = (visible: boolean) => {
   window.clearTimeout(controlsTimer);
   if (
     !visible
     && document.activeElement instanceof Node
-    && readerChrome.some((chrome) => chrome.contains(document.activeElement))
+    && readerControlSurfaces.some((surface) => (
+      surface.contains(document.activeElement)
+    ))
   ) {
     readerView.focus({ preventScroll: true });
   }
   readerView.dataset.controls = visible ? 'visible' : 'quiet';
-  if (visible && !persistent) {
+  if (visible) {
     scheduleReaderControlsHide();
   }
 };
 
-const createReaderPanelItem = (
-  title: string,
-  detail: string,
-  anchor: number,
-) => {
-  const button = document.createElement('button');
+const getBookChapters = (book: Book) => (
+  book.imported ? book.chapters ?? [] : builtInChapters
+);
 
-  button.className = 'reader-panel-item';
-  button.append(
-    createTextElement('strong', '', title),
-    createTextElement('span', '', detail),
-  );
-  button.addEventListener('click', () => jumpToAnchor(anchor));
-  return button;
-};
+const getChapterEntries = (book: Book) => {
+  const segments = createTextSegments(getBookParagraphs(book));
+  const chapters = getBookChapters(book);
+  const minimumLevel = chapters.length
+    ? Math.min(...chapters.map((chapter) => chapter.level))
+    : 1;
 
-const renderContents = () => {
-  const list = document.createElement('div');
-  const chapterTitle = activeBook.chapterTitle ?? activeBook.title;
-  const anchors = readerBookmarks[activeBook.id] ?? [];
+  return chapters.flatMap((chapter) => {
+    const anchor = segments[chapter.paragraphIndex]?.startOffset;
 
-  list.className = 'reader-panel-list';
-  list.append(createReaderPanelItem(chapterTitle, '回到本章开头', 0));
-  list.append(createTextElement('h3', 'reader-panel-section-title', '书签'));
-  anchors.forEach((anchor) => {
-    const pageIndex = pages.findIndex((page) => (
-      page.endOffset > anchor || page.startOffset === anchor
-    ));
-    const resolvedPage = pages[Math.max(pageIndex, 0)];
-    const excerpt = resolvedPage?.paragraphs.join(' ').slice(0, 54) ?? '';
-
-    list.append(createReaderPanelItem(
-      `第 ${Math.max(pageIndex + 1, 1)} 页`,
-      excerpt || '已保存的阅读位置',
+    if (typeof anchor !== 'number') {
+      return [];
+    }
+    return [{
+      ...chapter,
+      level: Math.min(3, chapter.level - minimumLevel + 1) as 1 | 2 | 3,
       anchor,
-    ));
+    }];
   });
-
-  if (!anchors.length) {
-    list.append(createTextElement('p', 'reader-panel-empty', '保存的书签会出现在这里。'));
-  }
-  contentsList.replaceChildren(list);
 };
 
 const setReaderPanel = (
@@ -1652,7 +2192,6 @@ const setReaderPanel = (
   }
   if (panel && (options.invoker || !activePanel)) {
     const invoker = options.invoker
-      ?? panelActionButtons.find((button) => button.dataset.readerAction === panel)
       ?? (document.activeElement instanceof HTMLElement ? document.activeElement : readerView);
 
     panelInvoker = invoker;
@@ -1661,9 +2200,6 @@ const setReaderPanel = (
   readerPanel.dataset.open = String(Boolean(panel));
   readerPanel.toggleAttribute('inert', !panel);
   readerPanel.setAttribute('aria-hidden', String(!panel));
-  panelActionButtons.forEach((button) => {
-    button.setAttribute('aria-expanded', String(button.dataset.readerAction === panel));
-  });
 
   if (!panel) {
     delete readerPanel.dataset.panel;
@@ -1672,60 +2208,43 @@ const setReaderPanel = (
     return;
   }
 
-  setReaderControls(true, true);
+  setReaderControls(true);
   readerPanel.dataset.panel = panel;
-  readerPanelTitle.textContent = panel === 'progress'
-    ? '阅读进度'
-    : panel === 'contents'
-      ? '目录与书签'
-      : '阅读显示';
-  if (panel === 'contents') {
-    renderContents();
-  } else if (panel === 'appearance') {
-    readerAppearanceMount.append(settingsOptions);
-    resetAppearanceFormState();
-  }
+  readerPanel.setAttribute('aria-label', '阅读显示');
+  readerAppearanceMount.append(settingsOptions);
+  resetAppearanceFormState();
   requestAnimationFrame(() => {
-    const firstItem = panel === 'appearance'
-      ? fontFamilyInput
-      : panel === 'progress'
-        ? progressSlider
-        : readerPanel.querySelector<HTMLButtonElement>('.reader-panel-item');
-
-    (firstItem ?? queryRequired<HTMLButtonElement>('[data-reader-panel-close]')).focus();
+    fontFamilyInput.focus();
   });
 };
 
 const jumpToAnchor = (anchor: number) => {
-  if (paginationInProgress) {
-    showToast('书页仍在整理，请稍候');
+  if (readingDocumentPreparing) {
     return;
   }
 
-  spreadIndex = findSpreadForAnchor(pages, anchor);
-  renderSpread();
-  saveCurrentProgress();
+  scrollToAnchor(anchor);
+  readingProgress[activeBook.id] = anchor;
+  localStorage.setItem(PROGRESS_KEY, JSON.stringify(readingProgress));
   setReaderPanel(null);
   setReaderControls(true);
 };
 
 const toggleBookmark = () => {
-  const anchor = getCurrentAnchor();
-  const anchors = readerBookmarks[activeBook.id] ?? [];
-  const [left, right] = spreads[spreadIndex];
-  const rangeEnd = Math.max(left.endOffset, right.endOffset);
-  const visibleBookmark = anchors.find((item) => item >= left.startOffset && item < rangeEnd);
-  const exists = typeof visibleBookmark === 'number';
+  const range = getScrollRange();
+  const ratio = range > 0 ? readerSurface.scrollTop / range : 0;
+  const pinnedRatio = readerPins[activeBook.id];
+  const pinnedHere = typeof pinnedRatio === 'number'
+    && Math.abs(pinnedRatio - ratio) <= 0.005;
 
-  readerBookmarks[activeBook.id] = exists
-    ? anchors.filter((item) => item !== visibleBookmark)
-    : [...anchors, anchor].sort((left, right) => left - right);
-  localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(readerBookmarks));
-  updateReaderNavigation();
-  if (activePanel === 'contents') {
-    renderContents();
+  if (pinnedHere) {
+    delete readerPins[activeBook.id];
+  } else {
+    readerPins[activeBook.id] = ratio;
   }
-  showToast(exists ? '已移除书签' : '已加入书签');
+  localStorage.setItem(PINS_KEY, JSON.stringify(readerPins));
+  updateReaderNavigation();
+  renderProgressBookmarks();
 };
 
 const getBookParagraphs = (book: Book) => book.paragraphs ?? paragraphStream;
@@ -1739,6 +2258,9 @@ const createReadingPage = (
   const page: ReadingPage = {
     runningTitle: book.title,
     paragraphs: segments.map((segment) => segment.text),
+    segments: [...segments],
+    formats: book.formats ?? [],
+    sourceFormat: book.sourceFormat,
     startOffset: firstSegment?.startOffset ?? 0,
     endOffset: lastSegment
       ? lastSegment.startOffset + lastSegment.text.length
@@ -1748,319 +2270,191 @@ const createReadingPage = (
   return page;
 };
 
-const pageFits = (page: ReadingPage) => {
-  mountPage(paginationMeasure, page, 88);
-  const pageInner = queryRequired<HTMLElement>('.page-inner', paginationMeasure);
-  const pageBody = queryRequired<HTMLElement>('.page-body', paginationMeasure);
-  const pageNumber = queryRequired<HTMLElement>('.page-number', paginationMeasure);
-  const bodyBottom = pageBody.offsetTop + pageBody.offsetHeight;
-
-  return bodyBottom <= pageNumber.offsetTop - 20
-    && pageInner.scrollHeight <= pageInner.clientHeight + 1;
-};
-
-const getLayoutSignature = () => {
-  return [
-    window.innerWidth,
-    window.innerHeight,
-    readerSurface.clientWidth,
-    readerSurface.clientHeight,
-    appearance.fontFamily,
-    appearance.fontSize,
-  ].join(':');
-};
-
-const paginateBook = async (
-  book: Book,
-  generation: number,
-  revision: number,
-  onPage?: (page: ReadingPage, pageIndex: number) => void,
-) => {
-  const nextPages: ReadingPage[] = [];
-  const segmentPages = await paginateTextSegments({
-    segments: createTextSegments(getBookParagraphs(book)),
-    fits: (segments) => pageFits(
-      createReadingPage(book, [...segments]),
-    ),
-    isCancelled: () => (
-      generation !== paginationGeneration
-      || revision !== layoutRevision
-    ),
-    onPage: (segments, pageIndex) => {
-      const page = createReadingPage(book, [...segments]);
-
-      nextPages.push(page);
-      onPage?.(page, pageIndex);
-    },
-  });
-
-  if (!segmentPages) {
-    return null;
-  }
-  return nextPages.length ? nextPages : [emptyPage()];
-};
-
-const findSpreadForAnchor = (nextPages: ReadingPage[], anchor: number) => {
-  const pageIndex = nextPages.findIndex((page) => (
-    page.endOffset > anchor || page.startOffset === anchor
-  ));
-  const resolvedPageIndex = pageIndex >= 0 ? pageIndex : Math.max(nextPages.length - 1, 0);
-
-  return Math.floor(resolvedPageIndex / 2);
-};
-
 const saveCurrentProgress = () => {
-  const anchor = spreads[spreadIndex]?.[0]?.startOffset;
-
-  if (typeof anchor !== 'number') {
-    return;
-  }
-
-  readingProgress[activeBook.id] = anchor;
+  readingProgress[activeBook.id] = getCurrentAnchor();
   localStorage.setItem(PROGRESS_KEY, JSON.stringify(readingProgress));
 };
 
-const preparePagination = async (
+const prepareReadingDocument = async (
   book: Book,
   anchor: number,
-  onPreviewReady?: () => void,
 ) => {
-  const generation = ++paginationGeneration;
-  const revision = layoutRevision;
-  const layoutSignature = getLayoutSignature();
-  const cacheKey = `${book.id}:${layoutSignature}`;
-  const previewPages: ReadingPage[] = [];
-  const previewSpreads: Array<[ReadingPage, ReadingPage]> = [];
-  let completed = false;
-
-  paginationInProgress = true;
-  pendingDirection = null;
-  readerSurface.classList.add('is-reflowing');
+  readingDocumentPreparing = true;
   bookCopy.setAttribute('aria-busy', 'true');
-  pageBackButton.disabled = true;
-  pageForwardButton.disabled = true;
-  pageBackZone.disabled = true;
-  pageForwardZone.disabled = true;
-  readerStatus.textContent = '正在整理书页';
+  readerStatus.textContent = '正在载入正文';
 
   try {
     await document.fonts.ready;
-    await nextFrame();
-    const cachedPages = paginationCache.get(cacheKey);
-    if (cachedPages) {
-      paginationCache.delete(cacheKey);
-      paginationCache.set(cacheKey, cachedPages);
-    }
-    const nextPages = cachedPages ?? await paginateBook(
+    readingDocument = createReadingPage(
       book,
-      generation,
-      revision,
-      anchor === 0
-        ? (page, pageIndex) => {
-            previewPages.push(page);
-            if (pageIndex % 2 === 1) {
-              previewSpreads.push([
-                previewPages[pageIndex - 1],
-                previewPages[pageIndex],
-              ]);
-              pages = previewPages;
-              spreads = previewSpreads;
-              spreadIndex = Math.min(spreadIndex, spreads.length - 1);
-              if (!turnInProgress) {
-                renderSpread();
-              }
-              if (previewPages.length === 2) {
-                onPreviewReady?.();
-              }
-            }
-          }
-        : undefined,
+      createTextSegments(getBookParagraphs(book)),
     );
-
-    if (
-      !nextPages
-      || generation !== paginationGeneration
-      || revision !== layoutRevision
-      || activeBook.id !== book.id
-      || layoutSignature !== getLayoutSignature()
-    ) {
-      return false;
-    }
-
-    paginationCache.set(cacheKey, nextPages);
-    while (paginationCache.size > MAX_PAGINATION_CACHE_ENTRIES) {
-      const oldestKey = paginationCache.keys().next().value as string | undefined;
-
-      if (!oldestKey) {
-        break;
-      }
-      paginationCache.delete(oldestKey);
-    }
-    pages = nextPages;
-    spreads = pairPages(nextPages);
-    spreadIndex = findSpreadForAnchor(nextPages, anchor);
-    renderSpread();
+    renderReadingDocument();
+    await afterPaint();
+    refreshReadingLayout();
+    renderReaderMinimapBars();
+    scrollToAnchor(anchor, 'auto');
     saveCurrentProgress();
-    readerStatus.textContent = `已排为 ${nextPages.length} 页`;
-    completed = true;
+    readerStatus.textContent = `已打开《${book.title}》`;
     return true;
   } catch {
-    readerStatus.textContent = '整理书页失败';
+    readerStatus.textContent = '正文载入失败';
     return false;
   } finally {
-    if (generation === paginationGeneration) {
-      paginationInProgress = false;
-      readerSurface.classList.remove('is-reflowing');
-      bookCopy.removeAttribute('aria-busy');
-      if (!completed) {
-        renderSpread();
-      }
+    readingDocumentPreparing = false;
+    bookCopy.removeAttribute('aria-busy');
+    updateReaderNavigation();
+    renderProgressBookmarks();
+  }
+};
+
+const announceStatus = (message: string) => {
+  appStatus.textContent = '';
+  requestAnimationFrame(() => {
+    appStatus.textContent = message;
+  });
+};
+
+const PAGE_TURN_VOLUME = 0.18;
+
+const createPageTurnAudio = (source: string) => {
+  const audio = new Audio(source);
+
+  audio.preload = 'auto';
+  audio.volume = PAGE_TURN_VOLUME;
+  return audio;
+};
+
+const pageTurnAudio: Record<Direction, HTMLAudioElement[]> = {
+  forward: [
+    createPageTurnAudio(pageTurnForwardOne),
+    createPageTurnAudio(pageTurnForwardTwo),
+  ],
+  backward: [
+    createPageTurnAudio(pageTurnBackwardOne),
+    createPageTurnAudio(pageTurnBackwardTwo),
+  ],
+};
+const allPageTurnAudio = Object.values(pageTurnAudio).flat();
+
+const resetPageTurnAudio = (audio: HTMLAudioElement) => {
+  audio.pause();
+  audio.currentTime = 0;
+  audio.playbackRate = 1;
+  audio.volume = PAGE_TURN_VOLUME;
+};
+
+const fadeOutPageTurnAudio = (audio: HTMLAudioElement, duration = 36) => {
+  const startedAt = performance.now();
+  const initialVolume = audio.volume;
+
+  const fade = (now: number) => {
+    if (audio.paused) {
+      resetPageTurnAudio(audio);
+      return;
     }
 
-    if (pendingLayout && mode === 'reading') {
-      void repaginateActiveBook();
+    const progress = Math.min((now - startedAt) / duration, 1);
+    audio.volume = initialVolume * (1 - progress);
+
+    if (progress < 1) {
+      window.requestAnimationFrame(fade);
+    } else {
+      resetPageTurnAudio(audio);
     }
-  }
-};
+  };
 
-const repaginateActiveBook = async () => {
-  if (mode !== 'reading' || paginationInProgress) {
-    pendingLayout = true;
-    return;
-  }
-
-  pendingLayout = false;
-  const anchor = spreads[spreadIndex]?.[0]?.startOffset ?? 0;
-
-  await preparePagination(activeBook, anchor);
-};
-
-const markLayoutStale = () => {
-  layoutRevision += 1;
-  pendingLayout = true;
-  activeAnimations.forEach((animation) => animation.finish());
-};
-
-const requestRepagination = () => {
-  observedLayoutSignature = getLayoutSignature();
-  markLayoutStale();
-
-  if (!turnInProgress && !paginationInProgress && mode === 'reading') {
-    void repaginateActiveBook();
-  }
-};
-
-const showToast = (
-  message: string,
-  action?: { label: string; run: () => void | Promise<void> },
-) => {
-  window.clearTimeout(toastTimer);
-  toastMessage.textContent = message;
-  toastActionButton.hidden = !action;
-  toastActionButton.textContent = action?.label ?? '';
-  toastActionButton.onclick = action
-    ? () => {
-        window.clearTimeout(toastTimer);
-        toast.classList.remove('is-visible');
-        toastActionButton.hidden = true;
-        toastActionButton.onclick = null;
-        void Promise.resolve(action.run()).catch(() => {
-          showToast('操作没有完成，请再试一次');
-        });
-      }
-    : null;
-  toast.classList.toggle('has-action', Boolean(action));
-  toast.classList.add('is-visible');
-  toastTimer = window.setTimeout(() => {
-    toast.classList.remove('is-visible');
-    window.setTimeout(() => {
-      if (!toast.classList.contains('is-visible')) {
-        toastMessage.textContent = '';
-        toastActionButton.hidden = true;
-        toastActionButton.onclick = null;
-      }
-    }, 220);
-  }, action ? 8000 : 2400);
-};
-
-const getAudioContext = () => {
-  if (!audioContext) {
-    audioContext = new AudioContext();
-    audioMaster = audioContext.createGain();
-    audioMaster.gain.value = soundEnabled ? 1 : 0;
-    audioMaster.connect(audioContext.destination);
-
-    const sampleCount = Math.ceil(audioContext.sampleRate * 0.56);
-    noiseBuffer = audioContext.createBuffer(1, sampleCount, audioContext.sampleRate);
-    const samples = noiseBuffer.getChannelData(0);
-
-    for (let index = 0; index < sampleCount; index += 1) {
-      samples[index] = Math.random() * 2 - 1;
-    }
-  }
-
-  return audioContext;
+  window.requestAnimationFrame(fade);
 };
 
 const primeAudio = () => {
-  if (!soundEnabled) {
-    return;
-  }
-
-  const context = getAudioContext();
-  if (context.state === 'suspended') {
-    void context.resume();
-  }
-};
-
-const noiseBurst = (
-  delay: number,
-  duration: number,
-  frequency: number,
-  volume: number,
-  pan = 0,
-) => {
-  if (!soundEnabled) {
-    return;
-  }
-
-  const context = getAudioContext();
-  const master = audioMaster;
-
-  if (!master || !noiseBuffer) {
-    return;
-  }
-
-  const source = context.createBufferSource();
-  const filter = context.createBiquadFilter();
-  const gain = context.createGain();
-  const panner = context.createStereoPanner();
-  const start = context.currentTime + delay;
-
-  source.buffer = noiseBuffer;
-  source.playbackRate.value = 0.94 + Math.random() * 0.12;
-  filter.type = 'bandpass';
-  filter.frequency.value = frequency;
-  filter.Q.value = 0.72;
-  panner.pan.value = pan;
-  gain.gain.setValueAtTime(0.0001, start);
-  gain.gain.exponentialRampToValueAtTime(volume, start + Math.min(0.025, duration / 3));
-  gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
-  source.connect(filter).connect(gain).connect(panner).connect(master);
-  source.start(start, 0, duration);
-  source.stop(start + duration);
-};
-
-const playBookSound = () => {
-  noiseBurst(0, 0.24, 840, 0.025, -0.12);
-  noiseBurst(0.18, 0.11, 390, 0.014, -0.04);
+  allPageTurnAudio.forEach((audio) => {
+    if (audio.readyState === HTMLMediaElement.HAVE_NOTHING) {
+      audio.load();
+    }
+  });
 };
 
 const playPageSound = (direction: Direction) => {
-  const pan = direction === 'forward' ? 0.08 : -0.08;
-  noiseBurst(0, 0.09, 2350, 0.016, -pan);
-  noiseBurst(0.07, 0.43, 1850, 0.032, pan);
-  noiseBurst(0.43, 0.12, 760, 0.012, pan);
+  primeAudio();
+  if (activePageSound && !activePageSound.paused) {
+    fadeOutPageTurnAudio(activePageSound);
+  }
+
+  const pool = pageTurnAudio[direction];
+  const available = pool
+    .map((_, index) => index)
+    .filter((index) => index !== lastPageSoundIndex[direction]);
+  const firstIndex = available[Math.floor(Math.random() * available.length)] ?? 0;
+  const candidates = [
+    firstIndex,
+    ...pool.map((_, index) => index).filter((index) => index !== firstIndex),
+  ];
+
+  const playCandidate = async () => {
+    let playbackError: unknown;
+
+    for (const index of candidates) {
+      const audio = pool[index];
+
+      resetPageTurnAudio(audio);
+      audio.volume = PAGE_TURN_VOLUME * (0.97 + Math.random() * 0.06);
+      activePageSound = audio;
+      audio.onended = () => {
+        resetPageTurnAudio(audio);
+        if (activePageSound === audio) {
+          activePageSound = null;
+        }
+      };
+
+      try {
+        await audio.play();
+        lastPageSoundIndex[direction] = index;
+        return;
+      } catch (error) {
+        playbackError = error;
+        resetPageTurnAudio(audio);
+      }
+    }
+
+    activePageSound = null;
+    if (!paperAudioWarningShown) {
+      paperAudioWarningShown = true;
+      console.warn('真实翻页录音无法播放，已保持静音。', playbackError);
+    }
+  };
+
+  void playCandidate();
+};
+
+const clearLibraryIdleTimer = () => {
+  window.clearTimeout(libraryIdleTimer);
+  libraryIdleTimer = undefined;
+};
+
+const canReturnToLanding = () => (
+  mode === 'library'
+  && !libraryOpenInProgress
+  && !importInProgress
+  && !loadingBookId
+  && libraryView.dataset.phase !== 'placing'
+);
+
+const scheduleLibraryIdleReturn = () => {
+  clearLibraryIdleTimer();
+  if (
+    !canReturnToLanding()
+    || document.visibilityState !== 'visible'
+    || !document.hasFocus()
+  ) {
+    return;
+  }
+
+  libraryIdleTimer = window.setTimeout(() => {
+    if (canReturnToLanding()) {
+      void returnToLanding();
+    }
+  }, LIBRARY_IDLE_RETURN_MS);
 };
 
 const setMode = (nextMode: AppMode) => {
@@ -2075,10 +2469,56 @@ const setMode = (nextMode: AppMode) => {
   landingView.setAttribute('aria-hidden', String(!landingActive));
   libraryView.setAttribute('aria-hidden', String(!libraryActive));
   readerView.setAttribute('aria-hidden', String(!readerActive));
+  if (libraryActive) {
+    scheduleLibraryIdleReturn();
+  } else {
+    clearLibraryIdleTimer();
+  }
+};
+
+const returnToLanding = async () => {
+  if (!canReturnToLanding() || libraryReturnInProgress) {
+    return;
+  }
+
+  libraryReturnInProgress = true;
+  clearLibraryIdleTimer();
+  setLibraryPanel(null, { restoreFocus: false });
+  libraryView.classList.remove('is-dragging');
+  const duration = reducedMotion.matches ? 90 : 260;
+  const timing: KeyframeAnimationOptions = {
+    duration,
+    easing: 'cubic-bezier(.32,.72,.2,1)',
+    fill: 'both',
+  };
+  const libraryAnimation = libraryView.animate(
+    [{ opacity: 1 }, { opacity: 0 }],
+    timing,
+  );
+  const landingAnimation = landingView.animate(
+    [{ opacity: 0 }, { opacity: 1 }],
+    timing,
+  );
+
+  setMode('landing');
+  stopThinkingOrb();
+  stopThinkingOrb = createThinkingOrb(thinkingOrbCanvas, reducedMotion);
+  await Promise.all([
+    libraryAnimation.finished.catch((): void => undefined),
+    landingAnimation.finished.catch((): void => undefined),
+  ]);
+  libraryAnimation.cancel();
+  landingAnimation.cancel();
+  libraryReturnInProgress = false;
+  enterLibraryButton.focus({ preventScroll: true });
 };
 
 const enterLibrary = () => {
-  if (mode !== 'landing' || enterLibraryButton.classList.contains('is-entering')) {
+  if (
+    mode !== 'landing'
+    || libraryReturnInProgress
+    || enterLibraryButton.classList.contains('is-entering')
+  ) {
     return;
   }
 
@@ -2092,15 +2532,39 @@ const enterLibrary = () => {
     setMode('library');
     enterLibraryButton.classList.remove('is-entering');
     landingView.classList.remove('is-leaving');
-    const firstBook = bookHotspots.querySelector<HTMLButtonElement>('[data-book-id]');
+    const firstBook = bookHotspots.querySelector<HTMLButtonElement>(
+      '.library-book-card-open[data-book-id]',
+    );
 
-    firstBook?.focus({ preventScroll: true });
+    (firstBook ?? libraryImportButton).focus({ preventScroll: true });
   }, duration);
 };
 
+const bookMaterials: BookMaterial[] = ['cloth', 'paper', 'aged'];
+
+const hashBookIdentity = (book: Book) => Array.from(book.id).reduce(
+  (hash, character) => (
+    (hash * 31 + (character.codePointAt(0) ?? 0)) >>> 0
+  ),
+  0,
+);
+
+const getBookCoverPresentation = (book: Book) => {
+  const hash = hashBookIdentity(book);
+
+  return {
+    material: book.material ?? bookMaterials[hash % bookMaterials.length],
+    variant: Math.floor(hash / 8) % 4,
+  };
+};
+
 const prepareTransitionBook = (book: Book) => {
+  const presentation = getBookCoverPresentation(book);
+
   transitionTitle.textContent = book.title;
-  transitionBook.style.setProperty('--active-book-color', book.color);
+  transitionBook.style.setProperty('--book-color', book.color);
+  transitionBook.dataset.material = presentation.material;
+  transitionBook.dataset.coverVariant = String(presentation.variant);
   transitionBook.classList.add('is-visible');
 };
 
@@ -2119,48 +2583,52 @@ const positionTransitionBook = () => {
 };
 
 const getReaderExpansion = (bookWidth: number, bookHeight: number) => {
-  const target = readerSurface.getBoundingClientRect();
-  const scaleX = target.width / (bookWidth * 2);
-  const scaleY = target.height / bookHeight;
+  const target = bookCopy.getBoundingClientRect();
+  const scaleX = target.width / bookWidth;
+  const scaleY = readerSurface.clientHeight / bookHeight;
 
   return {
     scaleX,
     scaleY,
-    translateX: bookWidth * scaleX / 2,
+    translateX: 0,
   };
 };
 
-const openBook = async (book: Book, trigger: HTMLButtonElement) => {
+const openBook = async (
+  book: Book,
+  trigger: HTMLButtonElement,
+  transitionAlreadyCentered = false,
+): Promise<OpenBookResult> => {
   if (mode !== 'library') {
-    return;
+    return 'cancelled';
   }
 
   activeBook = book;
   activeTrigger = trigger;
-  closePending = false;
-  pendingDirection = null;
   setMode('opening');
-  showToast('正在整理书页…');
+  announceStatus('正在载入正文…');
   const anchor = readingProgress[book.id] ?? 0;
-  let notifyPreviewReady: () => void = () => undefined;
-  const previewReady = new Promise<boolean>((resolve) => {
-    notifyPreviewReady = () => resolve(true);
-  });
-  const paginationPromise = preparePagination(book, anchor, notifyPreviewReady);
-  const readablePromise = anchor === 0
-    ? Promise.race([previewReady, paginationPromise])
-    : paginationPromise;
+  const documentPromise = prepareReadingDocument(book, anchor);
   prepareTransitionBook(book);
   const frame = positionTransitionBook();
-  const start = trigger.getBoundingClientRect();
-  const translateX = start.left + start.width / 2 - (frame.left + frame.width / 2);
-  const translateY = start.top + start.height / 2 - (frame.top + frame.height / 2);
-  const scaleX = Math.max(start.width / frame.width, 0.08);
-  const scaleY = Math.max(start.height / frame.height, 0.12);
+  const start = transitionAlreadyCentered
+    ? frame
+    : trigger.getBoundingClientRect();
+  const translateX = transitionAlreadyCentered
+    ? 0
+    : start.left + start.width / 2 - (frame.left + frame.width / 2);
+  const translateY = transitionAlreadyCentered
+    ? 0
+    : start.top + start.height / 2 - (frame.top + frame.height / 2);
+  const scaleX = transitionAlreadyCentered
+    ? 1
+    : Math.max(start.width / frame.width, 0.08);
+  const scaleY = transitionAlreadyCentered
+    ? 1
+    : Math.max(start.height / frame.height, 0.12);
   const readerTarget = getReaderExpansion(frame.width, frame.height);
-  const duration = reducedMotion.matches ? 150 : 620;
+  const duration = reducedMotion.matches ? 150 : transitionAlreadyCentered ? 520 : 720;
 
-  playBookSound();
   playPageSound('forward');
 
   const timing: KeyframeAnimationOptions = {
@@ -2171,21 +2639,44 @@ const openBook = async (book: Book, trigger: HTMLButtonElement) => {
   const bookAnimation = transitionBook.animate(
     reducedMotion.matches
       ? [{ opacity: 1 }, { opacity: 0 }]
-      : [
+      : transitionAlreadyCentered
+        ? [
+            {
+              transform: 'translate3d(0, 0, 0) scale(1)',
+              opacity: 1,
+            },
+            {
+              transform: 'translate3d(0, -4px, 22px) scale(1.035)',
+              opacity: 1,
+              offset: 0.34,
+            },
+            {
+              transform: `translate3d(${readerTarget.translateX}px, 0, 0)
+                scale(${readerTarget.scaleX}, ${readerTarget.scaleY}) rotateY(0)`,
+              opacity: 0,
+            },
+          ]
+        : [
           {
             transform: `translate3d(${translateX}px, ${translateY}px, 0)
-              scale(${scaleX}, ${scaleY}) rotateY(-8deg)`,
-            opacity: 0.78,
+              scale(${scaleX}, ${scaleY}) rotateX(58deg) rotateZ(2deg)`,
+            opacity: 1,
           },
           {
-            transform: 'translate3d(0, 0, 0) scale(.98) rotateY(0)',
+            transform: `translate3d(${translateX * 0.48}px, ${translateY * 0.48 - 18}px, 72px)
+              scale(.86) rotateX(18deg) rotateZ(-1deg)`,
             opacity: 1,
-            offset: 0.36,
+            offset: 0.24,
           },
           {
-            transform: 'translate3d(0, 0, 0) scale(1.06) rotateY(0)',
+            transform: 'translate3d(0, 0, 0) scale(.98) rotateX(0) rotateZ(0)',
             opacity: 1,
-            offset: 0.56,
+            offset: 0.44,
+          },
+          {
+            transform: 'translate3d(0, 0, 0) scale(1.05) rotateX(0) rotateZ(0)',
+            opacity: 1,
+            offset: 0.61,
           },
           {
             transform: `translate3d(${readerTarget.translateX}px, 0, 0)
@@ -2200,8 +2691,14 @@ const openBook = async (book: Book, trigger: HTMLButtonElement) => {
       ? [{ opacity: 1 }, { opacity: 0 }]
       : [
           { transform: 'rotateY(0deg)' },
-          { transform: 'rotateY(0deg)', offset: 0.24 },
-          { transform: 'rotateY(-158deg)', offset: 0.62 },
+          {
+            transform: 'rotateY(0deg)',
+            offset: transitionAlreadyCentered ? 0.18 : 0.4,
+          },
+          {
+            transform: 'rotateY(-158deg)',
+            offset: transitionAlreadyCentered ? 0.7 : 0.72,
+          },
           { transform: 'rotateY(-166deg)' },
         ],
     timing,
@@ -2211,7 +2708,11 @@ const openBook = async (book: Book, trigger: HTMLButtonElement) => {
       ? [{ opacity: 0 }, { opacity: 1 }]
       : [
           { opacity: 0, transform: 'scale(.95)' },
-          { opacity: 0, transform: 'scale(.96)', offset: 0.56 },
+          {
+            opacity: 0,
+            transform: 'scale(.96)',
+            offset: transitionAlreadyCentered ? 0.48 : 0.62,
+          },
           { opacity: 1, transform: 'scale(1)' },
         ],
     timing,
@@ -2219,110 +2720,123 @@ const openBook = async (book: Book, trigger: HTMLButtonElement) => {
   const animations = [bookAnimation, coverAnimation, readerAnimation];
 
   activeAnimations = animations;
-  let [ready] = await Promise.all([
-    readablePromise,
+  const [ready] = await Promise.all([
+    documentPromise,
     ...animations.map((animation) => animation.finished.catch((): void => undefined)),
   ]);
   activeAnimations = [];
-
-  if (ready && !paginationInProgress) {
-    ready = await paginationPromise;
-  }
-
-  if (
-    shell.dataset.mode === 'opening'
-    && activeBook.id === book.id
-    && pendingLayout
-  ) {
-    await paginationPromise;
-    pendingLayout = false;
-    showToast('正在适配新的窗口尺寸…');
-    ready = await preparePagination(book, anchor);
-  }
 
   if (!ready || shell.dataset.mode !== 'opening' || activeBook.id !== book.id) {
     animations.forEach((animation) => animation.cancel());
     transitionBook.classList.remove('is-visible');
     if (shell.dataset.mode === 'opening') {
       setMode('library');
-      showToast('暂时无法打开这本书');
+      announceStatus('暂时无法打开这本书');
     }
-    return;
+    return shell.dataset.mode === 'library' ? 'failed' : 'cancelled';
   }
 
   setMode('reading');
   animations.forEach((animation) => animation.cancel());
   transitionBook.classList.remove('is-visible');
-  const firstPage = spreadIndex * 2 + 1;
-  const lastPage = Math.min(firstPage + 1, pages.length);
-
-  readerStatus.textContent = `已打开《${book.title}》，第 ${firstPage} 至 ${lastPage} 页`;
+  await afterPaint();
+  scrollToAnchor(anchor, 'auto');
+  updateReaderNavigation();
+  readerStatus.textContent = `已打开《${book.title}》`;
   lastOpenedBookId = book.id;
   localStorage.setItem(LAST_BOOK_KEY, book.id);
   updateCurrentBookEntry();
   setReaderControls(true);
-  readerView.focus({ preventScroll: true });
+  readerSurface.focus({ preventScroll: true });
 
-  if (paginationInProgress) {
-    showToast('第一页已就绪，余下书页继续整理');
-    void paginationPromise.then((success) => {
-      if (
-        !success
-        && mode === 'reading'
-        && activeBook.id === book.id
-        && !pendingLayout
-        && !paginationInProgress
-      ) {
-        showToast('余下书页没有整理完成');
-      }
-    });
-  }
+  return 'opened';
+};
 
-  if (closePending) {
-    closePending = false;
-    void closeBook();
-  }
+const createBookReturnFlight = (
+  translateX: number,
+  translateY: number,
+  scaleX: number,
+  scaleY: number,
+): Keyframe[] => {
+  const distance = Math.hypot(translateX, translateY);
+  const lift = Math.min(164, Math.max(76, distance * 0.24));
+  const controlX = translateX * 0.56;
+  const controlY = Math.min(translateY, 0) - lift;
+  const quadraticFromCenter = (
+    destination: number,
+    control: number,
+    progress: number,
+  ) => (
+    progress ** 2 * destination
+    + 2 * progress * (1 - progress) * control
+  );
+  const pathProgress = [0, 0.22, 0.48, 0.74, 1];
+  const pathOffsets = [0.44, 0.55, 0.69, 0.84, 0.96];
+
+  return pathProgress.map((progress, index) => {
+    const scaleProgress = progress ** 2;
+    const currentScaleX = 1 + (scaleX - 1) * scaleProgress;
+    const currentScaleY = 1 + (scaleY - 1) * scaleProgress;
+    const depth = Math.sin(Math.PI * progress) * 138;
+
+    return {
+      transform: `translate3d(
+        ${quadraticFromCenter(translateX, controlX, progress)}px,
+        ${quadraticFromCenter(translateY, controlY, progress)}px,
+        ${depth}px
+      ) scale(${currentScaleX}, ${currentScaleY})
+        rotateY(${-12 * progress}deg)
+        rotateZ(${2.4 * Math.sin(Math.PI * progress)}deg)`,
+      opacity: 1 - progress * 0.08,
+      filter: `drop-shadow(0 ${4 + depth * 0.16}px ${6 + depth * 0.18}px
+        rgba(22, 30, 33, ${0.2 - progress * 0.1}))`,
+      offset: pathOffsets[index],
+    };
+  });
 };
 
 const closeBook = async () => {
   if (mode === 'opening') {
-    paginationGeneration += 1;
-    paginationInProgress = false;
-    pendingLayout = false;
+    readingDocumentPreparing = false;
     activeAnimations.forEach((animation) => animation.cancel());
     activeAnimations = [];
-    readerSurface.classList.remove('is-reflowing');
     bookCopy.removeAttribute('aria-busy');
     transitionBook.classList.remove('is-visible');
     setMode('library');
-    showToast('已取消打开');
+    announceStatus('已取消打开');
     if (activeTrigger?.isConnected) {
       activeTrigger.focus({ preventScroll: true });
     }
     return;
   }
 
-  if (turnInProgress) {
-    closePending = true;
+  if (mode !== 'reading') {
     return;
   }
 
-  if (mode !== 'reading' || !activeTrigger) {
+  const returnTrigger = getPhysicalBookButton(activeBook.id) ?? activeTrigger;
+
+  if (!returnTrigger) {
     return;
   }
+  activeTrigger = returnTrigger;
 
-  paginationGeneration += 1;
-  paginationInProgress = false;
-  pendingLayout = false;
-  readerSurface.classList.remove('is-reflowing');
+  readingDocumentPreparing = false;
   bookCopy.removeAttribute('aria-busy');
   setReaderPanel(null, { restoreFocus: false });
   setReaderControls(false);
   saveCurrentProgress();
+  setLibraryPhase('browsing');
   setMode('closing');
   prepareTransitionBook(activeBook);
   const frame = positionTransitionBook();
-  const destination = activeTrigger.getBoundingClientRect();
+  const destinationVisual = returnTrigger.querySelector<HTMLElement>(
+    '.library-book-cover',
+  ) ?? returnTrigger;
+  const destination = destinationVisual.getBoundingClientRect();
+  const hasDestination = returnTrigger.isConnected
+    && destination.width > 0
+    && destination.height > 0;
   const translateX = destination.left + destination.width / 2
     - (frame.left + frame.width / 2);
   const translateY = destination.top + destination.height / 2
@@ -2330,45 +2844,53 @@ const closeBook = async () => {
   const scaleX = Math.max(destination.width / frame.width, 0.08);
   const scaleY = Math.max(destination.height / frame.height, 0.12);
   const readerTarget = getReaderExpansion(frame.width, frame.height);
-  const duration = reducedMotion.matches ? 150 : 520;
+  const duration = reducedMotion.matches ? 150 : 760;
+  const returnFlight = hasDestination
+    ? createBookReturnFlight(translateX, translateY, scaleX, scaleY)
+    : [{
+        transform: 'translate3d(0, -8px, 0) scale(.94)',
+        opacity: 0.72,
+        offset: 0.84,
+      }];
+  const finalBookFrame = returnFlight.at(-1) ?? {};
 
   playPageSound('backward');
-  window.setTimeout(playBookSound, duration * 0.42);
 
   const timing: KeyframeAnimationOptions = {
     duration,
-    easing: 'cubic-bezier(.24,.72,.2,1)',
+    easing: 'linear',
     fill: 'both',
   };
   const bookAnimation = transitionBook.animate(
     reducedMotion.matches
-      ? [{ opacity: 0 }, { opacity: 1 }, { opacity: 0 }]
+      ? [{ opacity: 0 }, { opacity: 0 }]
       : [
           {
             transform: `translate3d(${readerTarget.translateX}px, 0, 0)
               scale(${readerTarget.scaleX}, ${readerTarget.scaleY})`,
             opacity: 0,
+            offset: 0,
           },
           {
-            transform: `translate3d(${readerTarget.translateX}px, 0, 0)
-              scale(${readerTarget.scaleX}, ${readerTarget.scaleY})`,
-            opacity: 1,
+            transform: 'translate3d(0, 0, 0) scale(1.04)',
+            opacity: 0,
             offset: 0.22,
           },
           {
-            transform: 'translate3d(0, 0, 0) scale(1.06)',
+            transform: 'translate3d(0, 0, 0) scale(1.04)',
             opacity: 1,
-            offset: 0.46,
+            offset: 0.36,
           },
           {
-            transform: 'translate3d(0, 0, 0) scale(.98)',
+            transform: 'translate3d(0, 0, 0) scale(1)',
             opacity: 1,
-            offset: 0.62,
+            offset: 0.44,
           },
+          ...returnFlight,
           {
-            transform: `translate3d(${translateX}px, ${translateY}px, 0)
-              scale(${scaleX}, ${scaleY}) rotateY(-8deg)`,
-            opacity: 0.72,
+            ...finalBookFrame,
+            opacity: 0,
+            offset: 1,
           },
         ],
     timing,
@@ -2378,9 +2900,10 @@ const closeBook = async () => {
       ? [{ opacity: 0 }, { opacity: 1 }]
       : [
           { transform: 'rotateY(-166deg)' },
-          { transform: 'rotateY(-166deg)', offset: 0.24 },
-          { transform: 'rotateY(-158deg)', offset: 0.36 },
-          { transform: 'rotateY(0deg)', offset: 0.68 },
+          { transform: 'rotateY(-166deg)', offset: 0.18 },
+          { transform: 'rotateY(-148deg)', offset: 0.26 },
+          { transform: 'rotateY(-36deg)', offset: 0.35 },
+          { transform: 'rotateY(0deg)', offset: 0.42 },
           { transform: 'rotateY(0deg)' },
         ],
     timing,
@@ -2390,19 +2913,14 @@ const closeBook = async () => {
       ? [{ opacity: 1 }, { opacity: 0 }]
       : [
           { opacity: 1, transform: 'scale(1)' },
-          { opacity: 1, transform: 'scale(.985)', offset: 0.3 },
-          { opacity: 0, transform: 'scale(.96)', offset: 0.62 },
-          { opacity: 0, transform: 'scale(.94)' },
+          { opacity: 1, transform: 'scale(.992)', offset: 0.16 },
+          { opacity: 0, transform: 'scale(.965)', offset: 0.4 },
+          { opacity: 0, transform: 'scale(.96)' },
         ],
     timing,
   );
   const libraryAnimation = libraryView.animate(
-    reducedMotion.matches
-      ? [{ opacity: 1 }, { opacity: 1 }]
-      : [
-          { opacity: 0 },
-          { opacity: 1 },
-        ],
+    [{ opacity: 1 }, { opacity: 1 }],
     timing,
   );
   const animations = [bookAnimation, coverAnimation, readerAnimation, libraryAnimation];
@@ -2415,179 +2933,10 @@ const closeBook = async () => {
   animations.forEach((animation) => animation.cancel());
   transitionBook.classList.remove('is-visible');
   readerStatus.textContent = '';
-  closePending = false;
-  pendingDirection = null;
   updateCurrentBookEntry();
-  if (activeTrigger.isConnected) {
-    activeTrigger.focus({ preventScroll: true });
+  if (returnTrigger.isConnected) {
+    returnTrigger.focus({ preventScroll: true });
   }
-};
-
-const finishPageTurn = () => {
-  bookCopy.removeAttribute('aria-busy');
-  turnInProgress = false;
-
-  if (closePending) {
-    closePending = false;
-    pendingDirection = null;
-    void closeBook();
-    return;
-  }
-
-  if (pendingLayout) {
-    pendingDirection = null;
-    void repaginateActiveBook();
-    return;
-  }
-
-  const nextDirection = pendingDirection;
-  pendingDirection = null;
-  if (nextDirection) {
-    void turnPage(nextDirection);
-  }
-};
-
-const turnPage = async (direction: Direction) => {
-  if (mode !== 'reading') {
-    return;
-  }
-
-  if (turnInProgress) {
-    pendingDirection = direction;
-    return;
-  }
-
-  const nextIndex = spreadIndex + (direction === 'forward' ? 1 : -1);
-
-  if (nextIndex < 0 || nextIndex >= spreads.length) {
-    showToast(
-      direction === 'forward' && paginationInProgress
-        ? '下一页仍在整理'
-        : direction === 'forward'
-          ? '这一章读完了'
-          : '已经是第一页',
-    );
-    return;
-  }
-
-  turnInProgress = true;
-  const duration = reducedMotion.matches ? 140 : 300;
-  const isForward = direction === 'forward';
-  const [currentLeft, currentRight] = spreads[spreadIndex];
-  const [targetLeft, targetRight] = spreads[nextIndex];
-  const currentFirstPage = spreadIndex * 2 + 1;
-  const targetFirstPage = nextIndex * 2 + 1;
-
-  bookCopy.setAttribute('aria-busy', 'true');
-  playPageSound(direction);
-
-  if (reducedMotion.matches) {
-    spreadIndex = nextIndex;
-    renderSpread();
-    saveCurrentProgress();
-    readerStatus.textContent = `已翻到第 ${targetFirstPage} 至 ${Math.min(
-      targetFirstPage + 1,
-      pages.length,
-    )} 页`;
-    const fade = bookCopy.animate([{ opacity: 0.45 }, { opacity: 1 }], {
-      duration,
-      easing: 'ease-out',
-    });
-    activeAnimations = [fade];
-    await fade.finished.catch((): void => undefined);
-    activeAnimations = [];
-    fade.cancel();
-    setReaderControls(true);
-    finishPageTurn();
-    return;
-  }
-
-  turnFront.className = `turn-face turn-front ${isForward ? 'face-right' : 'face-left'}`;
-  turnBack.className = `turn-face turn-back ${isForward ? 'face-left' : 'face-right'}`;
-  mountPage(
-    turnFront,
-    isForward ? currentRight : currentLeft,
-    isForward ? currentFirstPage + 1 : currentFirstPage,
-  );
-  mountPage(
-    turnBack,
-    isForward ? targetLeft : targetRight,
-    isForward ? targetFirstPage : targetFirstPage + 1,
-  );
-
-  if (isForward) {
-    mountReadingPage(rightPage, targetRight, targetFirstPage + 1);
-  } else {
-    mountReadingPage(leftPage, targetLeft, targetFirstPage);
-  }
-
-  turnSheet.classList.toggle('is-backward', !isForward);
-  turnSheet.classList.add('is-visible');
-  await nextFrame();
-
-  const animation = turnSheet.animate(
-    isForward
-      ? [
-          {
-            transform: 'perspective(1800px) rotateY(0deg) scaleX(1)',
-          },
-          {
-            transform: 'perspective(1800px) rotateY(-22deg) scaleX(.985)',
-            offset: 0.18,
-          },
-          {
-            transform: 'perspective(1800px) rotateY(-92deg) scaleX(.78)',
-            offset: 0.52,
-          },
-          {
-            transform: 'perspective(1800px) rotateY(-160deg) scaleX(.985)',
-            offset: 0.82,
-          },
-          {
-            transform: 'perspective(1800px) rotateY(-179deg) scaleX(1)',
-          },
-        ]
-      : [
-          {
-            transform: 'perspective(1800px) rotateY(0deg) scaleX(1)',
-          },
-          {
-            transform: 'perspective(1800px) rotateY(22deg) scaleX(.985)',
-            offset: 0.18,
-          },
-          {
-            transform: 'perspective(1800px) rotateY(92deg) scaleX(.78)',
-            offset: 0.52,
-          },
-          {
-            transform: 'perspective(1800px) rotateY(160deg) scaleX(.985)',
-            offset: 0.82,
-          },
-          {
-            transform: 'perspective(1800px) rotateY(179deg) scaleX(1)',
-          },
-        ],
-    {
-      duration,
-      easing: 'cubic-bezier(.3,.72,.18,1)',
-      fill: 'both',
-    },
-  );
-
-  activeAnimations = [animation];
-  await animation.finished.catch((): void => undefined);
-  activeAnimations = [];
-  spreadIndex = nextIndex;
-  renderSpread();
-  saveCurrentProgress();
-  readerStatus.textContent = `已翻到第 ${targetFirstPage} 至 ${Math.min(
-    targetFirstPage + 1,
-    pages.length,
-  )} 页`;
-  animation.cancel();
-  turnSheet.classList.remove('is-visible');
-  setReaderControls(true);
-  finishPageTurn();
 };
 
 const toBookMetadata = (book: ImportedBookRecord): ImportedBookMetadata => ({
@@ -2601,44 +2950,380 @@ const toBookMetadata = (book: ImportedBookRecord): ImportedBookMetadata => ({
 });
 
 const getBookSummaryById = (bookId: string): Book | undefined => (
-  books.find((book) => book.id === bookId)
+  books.find((book) => (
+    book.id === bookId && !hiddenSampleBookIds.has(book.id)
+  ))
   ?? importedBooks.find((book) => book.id === bookId)
 );
 
-const setLibraryLens = (open: boolean) => {
-  libraryView.classList.toggle('is-managing', open);
-  libraryLens.classList.toggle('is-open', open);
-  libraryLens.toggleAttribute('inert', !open);
-  libraryLens.setAttribute('aria-hidden', String(!open));
-  libraryOpenButton.setAttribute('aria-expanded', String(open));
-  libraryTagLabel.textContent = open ? '完成' : '管理';
-  bookHotspots.inert = open;
-  bookHotspots.setAttribute('aria-hidden', String(open));
-  outlookSwitch.inert = open;
-  outlookSwitch.setAttribute('aria-hidden', String(open));
-  if (open) {
-    renderLibraryLens();
-    requestAnimationFrame(() => librarySearch.focus());
-  } else {
-    librarySearch.value = '';
-    libraryOpenButton.focus({ preventScroll: true });
+const getManagedBooks = (): Book[] => [
+  ...importedBooks.slice().sort((left, right) => right.createdAt - left.createdAt),
+  ...books.filter((book) => !hiddenSampleBookIds.has(book.id)),
+];
+
+const matchesLibraryQuery = (book: Book, query: string) => (
+  !query
+  || book.title.toLocaleLowerCase().includes(query)
+  || book.author.toLocaleLowerCase().includes(query)
+);
+
+const getPhysicalBookButton = (bookId: string) => (
+  bookHotspots.querySelector<HTMLButtonElement>(
+    `.library-book-card[data-book-id="${CSS.escape(bookId)}"]
+      > .library-book-card-open`,
+  )
+);
+
+const replaceRemovedBookReference = (removedBookId: string) => {
+  const fallback = getManagedBooks().find((book) => book.id !== removedBookId);
+
+  if (lastOpenedBookId === removedBookId) {
+    lastOpenedBookId = fallback?.id ?? '';
+    if (lastOpenedBookId) {
+      localStorage.setItem(LAST_BOOK_KEY, lastOpenedBookId);
+    } else {
+      localStorage.removeItem(LAST_BOOK_KEY);
+    }
   }
 };
 
+const hasBookProgress = (bookId: string) => (
+  Object.prototype.hasOwnProperty.call(readingProgress, bookId)
+);
+
+const matchesLibraryCategory = (
+  book: Book,
+  category: LibraryCategory = activeLibraryCategory,
+) => {
+  if (category === 'finished') {
+    return finishedBookIds.has(book.id);
+  }
+  if (category === 'reading') {
+    return !finishedBookIds.has(book.id)
+      && (hasBookProgress(book.id) || book.id === lastOpenedBookId);
+  }
+  return true;
+};
+
+const getCategoryBooks = (category: LibraryCategory = activeLibraryCategory) => (
+  getManagedBooks().filter((book) => matchesLibraryCategory(book, category))
+);
+
+const persistFinishedBooks = () => {
+  localStorage.setItem(FINISHED_BOOKS_KEY, JSON.stringify([...finishedBookIds]));
+};
+
+const toggleBookFinished = (book: Book) => {
+  const wasFinished = finishedBookIds.delete(book.id);
+
+  if (!wasFinished) {
+    finishedBookIds.add(book.id);
+  }
+  persistFinishedBooks();
+  renderLibrarySearch();
+  const nextButton = bookHotspots.querySelector<HTMLButtonElement>(
+    `[data-finished-book-id="${CSS.escape(book.id)}"]`,
+  );
+  const fallback = libraryCategoryButtons.find((button) => (
+    button.dataset.libraryCategory === activeLibraryCategory
+  ));
+
+  (nextButton ?? fallback)?.focus({ preventScroll: true });
+  announceStatus(wasFinished ? `《${book.title}》已恢复为在读` : `《${book.title}》已读完`);
+};
+
+const bindBookButton = (button: HTMLButtonElement, book: Book) => {
+  button.title = `${book.title} · ${book.author}`;
+  button.addEventListener('pointerdown', primeAudio);
+  button.addEventListener('click', () => void openBookSummary(book, button));
+};
+
+const createLibraryBookCard = (book: Book, query: string) => {
+  const card = document.createElement('article');
+  const openButton = document.createElement('button');
+  const cover = document.createElement('span');
+  const coverTitle = createTextElement('strong', 'library-book-cover-title', book.title);
+  const coverAuthor = createTextElement('span', 'library-book-cover-author', book.author);
+  const actions = document.createElement('div');
+  const finishedButton = document.createElement('button');
+  const removeButton = document.createElement('button');
+  const finished = finishedBookIds.has(book.id);
+  const matched = matchesLibraryQuery(book, query);
+  const presentation = getBookCoverPresentation(book);
+
+  card.className = 'library-book-card';
+  card.dataset.bookId = book.id;
+  card.dataset.finished = String(finished);
+  card.dataset.material = presentation.material;
+  card.dataset.coverVariant = String(presentation.variant);
+  card.classList.toggle('is-search-match', Boolean(query) && matched);
+  card.classList.toggle('is-search-miss', Boolean(query) && !matched);
+  card.toggleAttribute('inert', Boolean(query) && !matched);
+  card.style.setProperty('--book-color', book.color);
+  openButton.type = 'button';
+  openButton.className = 'library-book-card-open';
+  openButton.dataset.bookId = book.id;
+  openButton.setAttribute(
+    'aria-label',
+    book.id === lastOpenedBookId ? `继续阅读《${book.title}》` : `打开《${book.title}》`,
+  );
+  cover.className = 'library-book-cover';
+  cover.append(coverTitle, coverAuthor);
+  openButton.append(cover);
+  actions.className = 'library-book-card-actions';
+  finishedButton.type = 'button';
+  finishedButton.className = 'library-book-finished';
+  finishedButton.dataset.finishedBookId = book.id;
+  finishedButton.setAttribute('aria-pressed', String(finished));
+  finishedButton.setAttribute(
+    'aria-label',
+    finished ? `将《${book.title}》恢复为在读` : `标记《${book.title}》已读完`,
+  );
+  finishedButton.title = finished ? '恢复为在读' : '标记已读完';
+  finishedButton.innerHTML = renderReaderIcon('finished');
+  removeButton.type = 'button';
+  removeButton.className = 'library-book-remove';
+  removeButton.dataset.removeBookId = book.id;
+  removeButton.setAttribute('aria-label', `从书库移出《${book.title}》`);
+  removeButton.title = '移出书库';
+  removeButton.innerHTML = renderReaderIcon('trash');
+  actions.append(finishedButton, removeButton);
+  card.append(openButton, actions);
+  bindBookButton(openButton, book);
+  finishedButton.addEventListener('click', () => toggleBookFinished(book));
+  removeButton.addEventListener('click', () => {
+    if (book.imported) {
+      removeImportedBook(book.id);
+    } else {
+      removeSampleBook(book.id);
+    }
+  });
+  return card;
+};
+
+const renderLibraryCards = (query: string) => {
+  const allBooks = getManagedBooks();
+  const categoryBooks = allBooks.filter((book) => matchesLibraryCategory(book));
+  const fragment = document.createDocumentFragment();
+
+  categoryBooks.forEach((book) => fragment.append(createLibraryBookCard(book, query)));
+  bookHotspots.replaceChildren(fragment);
+  libraryCategoryButtons.forEach((button) => {
+    const category = button.dataset.libraryCategory as LibraryCategory;
+    const count = getCategoryBooks(category).length;
+    const categoryLabel = libraryCategoryLabels[category];
+
+    button.textContent = `${categoryLabel} ${count} 本`;
+    button.setAttribute('aria-label', `${categoryLabel}，${count} 本`);
+    button.setAttribute('aria-pressed', String(category === activeLibraryCategory));
+  });
+  const noSearchResults = Boolean(query) && matchedLibraryBooks.length === 0;
+  const emptyCategory = !query && categoryBooks.length === 0;
+
+  libraryEmpty.hidden = !(allBooks.length === 0 || noSearchResults || emptyCategory);
+  if (allBooks.length === 0) {
+    libraryEmptyTitle.textContent = '还没有书';
+    libraryEmptyAction.textContent = '导入第一本书';
+    libraryEmptyAction.dataset.action = 'import';
+  } else if (noSearchResults) {
+    libraryEmptyTitle.textContent = '没有找到';
+    libraryEmptyAction.textContent = '清除搜索';
+    libraryEmptyAction.dataset.action = 'clear-search';
+  } else if (emptyCategory) {
+    libraryEmptyTitle.textContent = '此分类暂无书籍';
+    libraryEmptyAction.textContent = '查看全部';
+    libraryEmptyAction.dataset.action = 'show-all';
+  }
+};
+
+const renderLibrarySearch = () => {
+  const query = librarySearch.value.trim().toLocaleLowerCase();
+  const categoryBooks = getCategoryBooks();
+
+  matchedLibraryBooks = categoryBooks.filter((book) => matchesLibraryQuery(book, query));
+  librarySearchMeta.textContent = query
+    ? `${matchedLibraryBooks.length} 本`
+    : `${categoryBooks.length} 本`;
+  renderLibraryCards(query);
+};
+
+const setLibraryPanel = (
+  panel: LibraryPanel | null,
+  options: { invoker?: HTMLElement; restoreFocus?: boolean } = {},
+) => {
+  const restoreTarget = libraryPanelInvoker?.isConnected
+    ? libraryPanelInvoker
+    : librarySearchButton;
+
+  if (!panel && options.restoreFocus !== false) {
+    restoreTarget.focus({ preventScroll: true });
+  }
+  if (panel && (options.invoker || !activeLibraryPanel)) {
+    libraryPanelInvoker = options.invoker
+      ?? libraryActionButtons.find((button) => button.dataset.libraryAction === panel)
+      ?? librarySearchButton;
+  }
+
+  activeLibraryPanel = panel;
+  libraryPanel.dataset.open = String(Boolean(panel));
+  libraryPanel.toggleAttribute('inert', !panel);
+  libraryPanel.setAttribute('aria-hidden', String(!panel));
+  libraryActionButtons.forEach((button) => {
+    button.setAttribute(
+      'aria-expanded',
+      String(button.dataset.libraryAction === panel),
+    );
+  });
+
+  if (!panel) {
+    delete libraryPanel.dataset.panel;
+    libraryPanelInvoker = null;
+    librarySearch.value = '';
+    if (!importInProgress) {
+      setImportPresentation(false);
+    }
+    renderLibrarySearch();
+    return;
+  }
+
+  libraryPanel.dataset.panel = panel;
+  libraryPanel.setAttribute(
+    'aria-label',
+    panel === 'search' ? '搜索书籍' : '导入书籍',
+  );
+  if (panel === 'search') {
+    renderLibrarySearch();
+    requestAnimationFrame(() => librarySearch.focus());
+  } else if (!importInProgress) {
+    window.clearTimeout(importProgressTimer);
+    setImportPresentation(false);
+    requestAnimationFrame(() => importChooseButton.focus());
+  }
+};
+
+const setLibraryPhase = (phase: 'browsing' | 'placing') => {
+  const placing = phase === 'placing';
+  const busy = placing || libraryOpenInProgress || importInProgress;
+
+  libraryView.dataset.phase = phase;
+  libraryView.toggleAttribute('aria-busy', busy);
+  bookHotspots.inert = busy;
+  libraryDock.inert = busy;
+  returnHomeButton.disabled = busy;
+  if (busy) {
+    clearLibraryIdleTimer();
+  } else {
+    scheduleLibraryIdleReturn();
+  }
+};
+
+const animateBookToCenter = async (
+  book: Book,
+  trigger: HTMLButtonElement,
+  requestRevision: number,
+) => {
+  setLibraryPhase('placing');
+  prepareTransitionBook(book);
+  const frame = positionTransitionBook();
+  const visual = trigger.querySelector<HTMLElement>('.library-book-cover') ?? trigger;
+  const start = visual.getBoundingClientRect();
+  const frameCenterX = frame.left + frame.width / 2;
+  const frameCenterY = frame.top + frame.height / 2;
+  const startX = start.left + start.width / 2 - frameCenterX;
+  const startY = start.top + start.height / 2 - frameCenterY;
+  const startScaleX = Math.max(start.width / frame.width, 0.14);
+  const startScaleY = Math.max(start.height / frame.height, 0.18);
+
+  if (reducedMotion.matches) {
+    await nextFrame();
+    return requestRevision === openRequestRevision && mode === 'library';
+  }
+
+  const distance = Math.hypot(startX, startY);
+  const lift = Math.min(164, Math.max(76, distance * 0.24));
+  const controlX = startX * 0.56;
+  const controlY = Math.min(startY, 0) - lift;
+  const quadratic = (startValue: number, controlValue: number, progress: number) => (
+    (1 - progress) ** 2 * startValue
+    + 2 * (1 - progress) * progress * controlValue
+  );
+  const pathProgress = [0, 0.22, 0.48, 0.74, 1];
+  const pathOffsets = [0, 0.19, 0.42, 0.65, 0.84];
+  const keyframes: Keyframe[] = pathProgress.map((progress, index) => {
+    const scaleProgress = 1 - (1 - progress) ** 2;
+    const scaleX = startScaleX + (1 - startScaleX) * scaleProgress;
+    const scaleY = startScaleY + (1 - startScaleY) * scaleProgress;
+    const depth = Math.sin(Math.PI * progress) * 138;
+
+    return {
+      transform: `translate3d(
+        ${quadratic(startX, controlX, progress)}px,
+        ${quadratic(startY, controlY, progress)}px,
+        ${depth}px
+      ) scale(${scaleX}, ${scaleY})
+        rotateY(${-12 * (1 - progress)}deg)
+        rotateZ(${2.4 * Math.sin(Math.PI * progress)}deg)`,
+      opacity: 0.88 + progress * 0.12,
+      filter: `drop-shadow(0 ${4 + depth * 0.16}px ${6 + depth * 0.18}px
+        rgba(22, 30, 33, ${0.1 + progress * 0.12}))`,
+      offset: pathOffsets[index],
+    };
+  });
+
+  keyframes.push(
+    {
+      transform: 'translate3d(0, 0, 0) scale(1.026)',
+      opacity: 1,
+      filter: 'drop-shadow(0 25px 34px rgba(22, 30, 33, .2))',
+      offset: 0.93,
+    },
+    {
+      transform: 'translate3d(0, 0, 0) scale(1)',
+      opacity: 1,
+      filter: 'drop-shadow(0 20px 28px rgba(22, 30, 33, .18))',
+      offset: 1,
+    },
+  );
+  const animation = transitionBook.animate(
+    keyframes,
+    {
+      duration: 620,
+      easing: 'linear',
+      fill: 'both',
+    },
+  );
+
+  activeAnimations = [animation];
+  await animation.finished.catch((): void => undefined);
+  activeAnimations = [];
+  animation.cancel();
+  return requestRevision === openRequestRevision && mode === 'library';
+};
+
 const openBookSummary = async (book: Book, trigger: HTMLButtonElement) => {
-  if (mode !== 'library') {
+  if (
+    mode !== 'library'
+    || libraryReturnInProgress
+    || libraryOpenInProgress
+    || importInProgress
+  ) {
     return;
   }
 
   const requestRevision = ++openRequestRevision;
+  const physicalTrigger = getPhysicalBookButton(book.id) ?? trigger;
 
-  setLibraryLens(false);
+  libraryOpenInProgress = true;
   loadingBookId = book.id;
+  setLibraryPhase('placing');
+  const flightPromise = animateBookToCenter(book, physicalTrigger, requestRevision);
+  setLibraryPanel(null, { restoreFocus: false });
+
   try {
     let readableBook = book;
 
     if (book.imported && !book.paragraphs) {
-      showToast(`正在取出《${book.title}》…`);
+      announceStatus(`正在取出《${book.title}》…`);
       const cachedBook = loadedBookCache.get(book.id);
 
       readableBook = cachedBook ?? await loadImportedBook(book.id);
@@ -2658,163 +3343,49 @@ const openBookSummary = async (book: Book, trigger: HTMLButtonElement) => {
       }
     }
 
-    if (requestRevision !== openRequestRevision || mode !== 'library') {
+    const centered = await flightPromise;
+    if (!centered || requestRevision !== openRequestRevision || mode !== 'library') {
       return;
     }
 
+    if (!reducedMotion.matches) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 72));
+    }
+    if (requestRevision !== openRequestRevision || mode !== 'library') {
+      return;
+    }
     loadingBookId = null;
-    const shelfTrigger = bookHotspots.querySelector<HTMLButtonElement>(
-      `[data-book-id="${CSS.escape(book.id)}"]`,
-    );
-    const transitionTrigger = shelfTrigger
-      ?? (libraryLens.contains(trigger) ? libraryOpenButton : trigger);
+    const returnTrigger = getPhysicalBookButton(book.id) ?? physicalTrigger;
 
-    await openBook(readableBook, transitionTrigger);
+    await openBook(readableBook, returnTrigger, true);
   } catch (error) {
+    await flightPromise.catch((): void => undefined);
+    transitionBook.classList.remove('is-visible');
+    setLibraryPhase('browsing');
     if (requestRevision !== openRequestRevision) {
       return;
     }
     const message = error instanceof Error ? error.message : '暂时无法打开这本书';
 
-    showToast(message);
+    announceStatus(message);
   } finally {
     if (requestRevision === openRequestRevision) {
       loadingBookId = null;
     }
+    libraryOpenInProgress = false;
+    if (mode === 'library' || mode === 'reading') {
+      setLibraryPhase('browsing');
+    }
   }
-};
-
-const bindBookButton = (button: HTMLButtonElement, book: Book) => {
-  button.title = `${book.title} · ${book.author}`;
-  button.addEventListener('pointerdown', primeAudio);
-  button.addEventListener('click', () => void openBookSummary(book, button));
-};
-
-const renderImportedBooks = () => {
-  const fragment = document.createDocumentFragment();
-
-  importedBooks.slice(-4).forEach((book, index) => {
-    const button = document.createElement('button');
-    const title = document.createElement('span');
-    const author = document.createElement('span');
-    const position = importedBookPositions[index];
-
-    if (!position) {
-      return;
-    }
-
-    button.className = 'imported-book book-spine';
-    button.dataset.bookId = book.id;
-    button.dataset.slot = String(index + 1);
-    button.setAttribute('aria-label', `打开《${book.title}》`);
-    button.style.setProperty('--book-color', book.color);
-    button.style.setProperty('--x', `${position[0]}%`);
-    button.style.setProperty('--y', `${position[1]}%`);
-    button.style.setProperty('--w', `${position[2]}%`);
-    button.style.setProperty('--h', `${position[3]}%`);
-    title.className = 'book-spine-title';
-    title.textContent = book.title;
-    author.className = 'book-spine-author';
-    author.textContent = book.author;
-    button.append(title, author);
-    bindBookButton(button, book);
-    fragment.append(button);
-  });
-
-  importedBookList.replaceChildren(fragment);
-  importedBookList.classList.toggle('has-books', importedBooks.length > 0);
-  updateCurrentBookEntry();
-};
-
-const renderLibraryLens = () => {
-  const query = librarySearch.value.trim().toLocaleLowerCase();
-  const managedBooks: Book[] = [
-    ...importedBooks.slice().sort((left, right) => right.createdAt - left.createdAt),
-    ...books,
-  ];
-  const visibleBooks = managedBooks.filter((book) => (
-    !query
-    || book.title.toLocaleLowerCase().includes(query)
-    || book.author.toLocaleLowerCase().includes(query)
-  ));
-  const fragment = document.createDocumentFragment();
-
-  visibleBooks.forEach((book) => {
-      const card = document.createElement('article');
-      const spine = document.createElement('span');
-      const openButton = document.createElement('button');
-      const metadata = document.createElement('span');
-      const actions = document.createElement('div');
-      const kind = document.createElement('span');
-
-      card.className = 'library-card';
-      card.style.setProperty('--book-color', book.color);
-      card.dataset.imported = String(Boolean(book.imported));
-      spine.className = 'library-card-spine';
-      openButton.className = 'library-card-open';
-      openButton.setAttribute('aria-label', `打开《${book.title}》`);
-      metadata.className = 'library-card-author';
-      metadata.textContent = book.author;
-      openButton.append(spine, createTextElement('strong', '', book.title), metadata);
-      bindBookButton(openButton, book);
-      actions.className = 'library-card-actions';
-      kind.textContent = book.imported ? '自有书' : '随书样本';
-      actions.append(kind);
-      if (book.imported) {
-        const removeButton = document.createElement('button');
-
-        removeButton.className = 'library-card-remove';
-        removeButton.textContent = '移出';
-        removeButton.setAttribute('aria-label', `移出《${book.title}》`);
-        removeButton.addEventListener('click', () => removeImportedBook(book.id));
-        actions.append(removeButton);
-      }
-      card.append(openButton, actions);
-      fragment.append(card);
-    });
-
-  libraryGrid.replaceChildren(fragment);
-  libraryCount.textContent = `${managedBooks.length} 本书 · ${importedBooks.length} 本自有`;
-  libraryEmpty.hidden = visibleBooks.length > 0;
-  libraryEmpty.textContent = '没有找到相符的书。';
-};
-
-const renderPendingRemovals = () => {
-  const count = pendingRemovals.size;
-
-  removalMessage.textContent = count === 1
-    ? '已移出 1 本书'
-    : `已移出 ${count} 本书`;
-  removalToast.classList.toggle('is-visible', count > 0);
-  removalToast.setAttribute('aria-hidden', String(count === 0));
-  removalToast.toggleAttribute('inert', count === 0);
-};
-
-const undoPendingRemovals = () => {
-  window.clearTimeout(removalTimer);
-  removalTimer = undefined;
-  const restored = [...pendingRemovals.values()];
-  const knownIds = new Set(importedBooks.map((book) => book.id));
-
-  pendingRemovals.clear();
-  restored.forEach((book) => {
-    if (!knownIds.has(book.id)) {
-      importedBooks.push(book);
-    }
-  });
-  renderImportedBooks();
-  renderLibraryLens();
-  updateCurrentBookEntry();
-  renderPendingRemovals();
-  showToast(restored.length === 1 ? '已恢复这本书' : `已恢复 ${restored.length} 本书`);
 };
 
 const commitPendingRemovals = async () => {
   const removals = [...pendingRemovals.entries()];
 
-  removalTimer = undefined;
+  if (!removals.length) {
+    return;
+  }
   pendingRemovals.clear();
-  renderPendingRemovals();
   const results = await Promise.allSettled(
     removals.map(([bookId]) => deleteImportedBook(bookId)),
   );
@@ -2826,12 +3397,10 @@ const commitPendingRemovals = async () => {
 
     if (result.status === 'fulfilled') {
       deletedIds.add(bookId);
+      finishedBookIds.delete(bookId);
       loadedBookCache.delete(bookId);
-      [...paginationCache.keys()]
-        .filter((key) => key.startsWith(`${bookId}:`))
-        .forEach((key) => paginationCache.delete(key));
       delete readingProgress[bookId];
-      delete readerBookmarks[bookId];
+      delete readerPins[bookId];
     } else {
       failedBooks.push(metadata);
     }
@@ -2839,10 +3408,15 @@ const commitPendingRemovals = async () => {
 
   if (deletedIds.size) {
     localStorage.setItem(PROGRESS_KEY, JSON.stringify(readingProgress));
-    localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(readerBookmarks));
+    localStorage.setItem(PINS_KEY, JSON.stringify(readerPins));
+    persistFinishedBooks();
     if (deletedIds.has(lastOpenedBookId)) {
-      lastOpenedBookId = books[0].id;
-      localStorage.setItem(LAST_BOOK_KEY, lastOpenedBookId);
+      lastOpenedBookId = getManagedBooks()[0]?.id ?? '';
+      if (lastOpenedBookId) {
+        localStorage.setItem(LAST_BOOK_KEY, lastOpenedBookId);
+      } else {
+        localStorage.removeItem(LAST_BOOK_KEY);
+      }
     }
   }
 
@@ -2854,10 +3428,9 @@ const commitPendingRemovals = async () => {
         importedBooks.push(book);
       }
     });
-    renderImportedBooks();
-    renderLibraryLens();
-    showToast('有书籍未能移出，已放回书架');
+    announceStatus('有书籍未能移出，已放回书架');
   }
+  renderLibrarySearch();
   updateCurrentBookEntry();
 };
 
@@ -2873,32 +3446,37 @@ const removeImportedBook = (bookId: string) => {
   }
   pendingRemovals.set(bookId, metadata);
   importedBooks = importedBooks.filter((book) => book.id !== bookId);
-  renderImportedBooks();
-  renderLibraryLens();
+  replaceRemovedBookReference(bookId);
+  renderLibrarySearch();
   updateCurrentBookEntry();
-  renderPendingRemovals();
-  window.clearTimeout(removalTimer);
-  removalTimer = window.setTimeout(() => {
-    void commitPendingRemovals();
-  }, 8000);
+  void commitPendingRemovals();
 };
 
-removalUndoButton.addEventListener('click', undoPendingRemovals);
+const removeSampleBook = (bookId: string) => {
+  const book = books.find((item) => item.id === bookId);
 
-app.querySelectorAll<HTMLButtonElement>('[data-book-id]').forEach((button) => {
-  const book = books.find((item) => item.id === button.dataset.bookId);
-
-  if (book) {
-    bindBookButton(button, book);
+  if (!book || hiddenSampleBookIds.has(bookId)) {
+    return;
   }
-});
+  const wasFinished = finishedBookIds.delete(bookId);
+
+  hiddenSampleBookIds.add(bookId);
+  localStorage.setItem(HIDDEN_SAMPLE_BOOKS_KEY, JSON.stringify([...hiddenSampleBookIds]));
+  if (wasFinished) {
+    persistFinishedBooks();
+  }
+  replaceRemovedBookReference(bookId);
+  renderLibrarySearch();
+  updateCurrentBookEntry();
+  announceStatus(`已移出《${book.title}》`);
+};
 
 const updateCurrentBookEntry = () => {
-  bookHotspots.querySelectorAll<HTMLButtonElement>('[data-book-id]').forEach((button) => {
+  bookHotspots.querySelectorAll<HTMLButtonElement>('.library-book-card-open').forEach((button) => {
     const book = getBookSummaryById(button.dataset.bookId ?? '');
     const current = button.dataset.bookId === lastOpenedBookId;
 
-    button.classList.toggle('is-current', current);
+    button.closest('.library-book-card')?.classList.toggle('is-current', current);
     if (book) {
       button.setAttribute(
         'aria-label',
@@ -2921,6 +3499,8 @@ const matchesImportedBook = async (record: ImportedBookRecord) => {
         && existing.paragraphs.every((paragraph, index) => (
           paragraph === record.paragraphs[index]
         ))
+        && JSON.stringify(existing.chapters ?? []) === JSON.stringify(record.chapters)
+        && JSON.stringify(existing.formats ?? []) === JSON.stringify(record.formats)
       ) {
         return true;
       }
@@ -2932,19 +3512,63 @@ const matchesImportedBook = async (record: ImportedBookRecord) => {
 };
 
 const importFiles = async (files: File[]) => {
+  if (!files.length) {
+    return;
+  }
+  if (mode !== 'library' || libraryOpenInProgress || importInProgress) {
+    announceStatus('上一批书仍在导入');
+    return;
+  }
+
   const importedIds = new Set<string>();
   const failures: string[] = [];
   let duplicateCount = 0;
 
-  for (const file of files) {
-    try {
-      const record = await parseImportedBook(file);
+  importInProgress = true;
+  window.clearTimeout(importProgressTimer);
+  setLibraryPanel('import', { invoker: libraryImportButton });
+  setImportPresentation(true);
+  setLibraryPhase('browsing');
+  libraryImportButton.disabled = true;
+  setSegmentedProgress(importProgress, importPercent, 0);
+  importProgress.setAttribute('aria-valuenow', '0');
+  importStatus.textContent = files.length === 1 ? files[0].name : `${files.length} 本书`;
 
+  const updateProgress = (fileIndex: number, stage: number, status: string) => {
+    const value = Math.round((fileIndex + stage) / files.length * 100);
+
+    setSegmentedProgress(importProgress, importPercent, value);
+    importProgress.setAttribute('aria-valuenow', String(value));
+    importProgress.setAttribute('aria-valuetext', status);
+    importStatus.textContent = status;
+  };
+
+  for (const [fileIndex, file] of files.entries()) {
+    try {
+      const record = await parseImportedBook(file, {
+        onProgress: (progress) => {
+          updateProgress(fileIndex, progress * 0.62, file.name);
+        },
+      });
+
+      updateProgress(fileIndex, 0.7, '检查重复');
       if (await matchesImportedBook(record)) {
         duplicateCount += 1;
+        updateProgress(fileIndex, 1, `${fileIndex + 1} / ${files.length}`);
         continue;
       }
+      updateProgress(fileIndex, 0.84, '放上书架');
       await saveImportedBook(record);
+      loadedBookCache.delete(record.id);
+      loadedBookCache.set(record.id, record);
+      while (loadedBookCache.size > MAX_LOADED_BOOK_CACHE_ENTRIES) {
+        const oldestId = loadedBookCache.keys().next().value as string | undefined;
+
+        if (!oldestId) {
+          break;
+        }
+        loadedBookCache.delete(oldestId);
+      }
       const metadata = toBookMetadata(record);
       const existingIndex = importedBooks.findIndex((book) => book.id === record.id);
 
@@ -2954,31 +3578,44 @@ const importFiles = async (files: File[]) => {
         importedBooks.push(metadata);
       }
       importedIds.add(record.id);
+      updateProgress(fileIndex, 1, `${fileIndex + 1} / ${files.length}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : '无法导入这本书';
 
       failures.push(`${file.name}：${message}`);
+      updateProgress(fileIndex, 1, `${fileIndex + 1} / ${files.length}`);
     }
   }
 
   const importedCount = importedIds.size;
 
   if (importedCount) {
-    renderImportedBooks();
-    renderLibraryLens();
+    renderLibrarySearch();
   }
 
+  setSegmentedProgress(importProgress, importPercent, 100);
+  importProgress.setAttribute('aria-valuenow', '100');
+  importProgress.setAttribute('aria-valuetext', '导入完成');
+  importStatus.textContent = failures.length ? '部分完成' : '完成';
+  importInProgress = false;
+  setLibraryPhase('browsing');
+  libraryImportButton.disabled = false;
+  importProgressTimer = window.setTimeout(() => {
+    if (activeLibraryPanel === 'import') {
+      setLibraryPanel(null, { restoreFocus: false });
+    }
+  }, 1200);
+
   if (failures.length) {
-    showToast(`导入 ${importedCount} 本，${failures.length} 本失败`, {
-      label: '查看',
-      run: () => showToast(failures[0]),
-    });
+    announceStatus(
+      `导入 ${importedCount} 本，${failures.length} 本失败。${failures[0]}`,
+    );
   } else if (importedCount && duplicateCount) {
-    showToast(`已导入 ${importedCount} 本，跳过 ${duplicateCount} 本重复书籍`);
+    announceStatus(`已导入 ${importedCount} 本，跳过 ${duplicateCount} 本重复书籍`);
   } else if (importedCount) {
-    showToast(`已把 ${importedCount} 本书放上书架`);
+    announceStatus(`已把 ${importedCount} 本书放入书库`);
   } else if (duplicateCount) {
-    showToast(duplicateCount === 1 ? '这本书已在书架上' : '这些书已在书架上');
+    announceStatus(duplicateCount === 1 ? '这本书已在书库中' : '这些书已在书库中');
   }
 };
 
@@ -2988,6 +3625,7 @@ importInput.addEventListener('change', () => {
   importInput.value = '';
   void importFiles(files);
 });
+importChooseButton.addEventListener('click', () => importInput.click());
 
 enterLibraryButton.addEventListener('click', enterLibrary);
 landingPanelActionButtons.forEach((button) => {
@@ -3011,19 +3649,64 @@ landingSceneButtons.forEach((button) => {
     }
   });
 });
-outlookSwitch.addEventListener('click', () => {
-  setOutlookScene(outlookSceneIndex + 1);
+
+returnHomeButton.addEventListener('click', () => void returnToLanding());
+libraryCategoryButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    const category = button.dataset.libraryCategory as LibraryCategory;
+
+    activeLibraryCategory = category;
+    bookHotspots.scrollTop = 0;
+    renderLibrarySearch();
+    button.focus({ preventScroll: true });
+  });
+});
+libraryEmptyAction.addEventListener('click', () => {
+  const action = libraryEmptyAction.dataset.action;
+
+  if (action === 'import') {
+    libraryImportButton.click();
+  } else if (action === 'clear-search') {
+    librarySearch.value = '';
+    renderLibrarySearch();
+    librarySearch.focus();
+  } else if (action === 'show-all') {
+    activeLibraryCategory = 'all';
+    renderLibrarySearch();
+    libraryCategoryButtons[0]?.focus({ preventScroll: true });
+  }
 });
 
-libraryOpenButton.addEventListener('click', () => {
-  setLibraryLens(!libraryLens.classList.contains('is-open'));
+libraryActionButtons.forEach((button) => {
+  button.addEventListener('click', () => {
+    const action = button.dataset.libraryAction;
+
+    if (action === 'import') {
+      setLibraryPanel(
+        activeLibraryPanel === 'import' ? null : 'import',
+        { invoker: button },
+      );
+    } else if (action === 'search') {
+      setLibraryPanel(
+        activeLibraryPanel === 'search' ? null : 'search',
+        { invoker: button },
+      );
+    }
+  });
 });
-libraryImportButton.addEventListener('click', () => importInput.click());
-queryRequired<HTMLButtonElement>('[data-library-close]').addEventListener('click', () => {
-  setLibraryLens(false);
-  libraryOpenButton.focus({ preventScroll: true });
+librarySearch.addEventListener('input', renderLibrarySearch);
+librarySearch.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && librarySearch.value.trim()) {
+    const firstMatch = matchedLibraryBooks[0];
+
+    if (firstMatch) {
+      event.preventDefault();
+      const trigger = getPhysicalBookButton(firstMatch.id) ?? librarySearchButton;
+
+      void openBookSummary(firstMatch, trigger);
+    }
+  }
 });
-librarySearch.addEventListener('input', renderLibraryLens);
 
 libraryView.addEventListener('dragover', (event) => {
   if (event.dataTransfer?.types.includes('Files')) {
@@ -3047,118 +3730,110 @@ libraryView.addEventListener('drop', (event) => {
   }
 });
 
-const returnButton = queryRequired<HTMLButtonElement>('[data-return]');
-const pageBackButton = queryRequired<HTMLButtonElement>('[data-page-back]');
-const pageForwardButton = queryRequired<HTMLButtonElement>('[data-page-forward]');
-const pageBackZone = queryRequired<HTMLButtonElement>('[data-page-back-zone]');
-const pageForwardZone = queryRequired<HTMLButtonElement>('[data-page-forward-zone]');
+returnButton.addEventListener('click', () => {
+  void closeBook();
+});
+bookmarkButton.addEventListener('click', toggleBookmark);
+readerProgress.addEventListener('pointermove', (event) => {
+  window.cancelAnimationFrame(minimapMotionFrame ?? 0);
+  const pointerY = event.clientY;
 
-returnButton.addEventListener('click', closeBook);
-pageBackButton.addEventListener('click', () => turnPage('backward'));
-pageForwardButton.addEventListener('click', () => turnPage('forward'));
-pageBackZone.addEventListener('click', () => turnPage('backward'));
-pageForwardZone.addEventListener('click', () => turnPage('forward'));
+  minimapMotionFrame = requestAnimationFrame(() => {
+    const bars = [
+      ...readerMinimapBars.querySelectorAll<HTMLElement>('.reader-minimap-bar'),
+    ];
+    let closestBar: HTMLElement | undefined;
+    let closestDistance = Number.POSITIVE_INFINITY;
 
-readerView.querySelectorAll<HTMLButtonElement>('[data-reader-action]').forEach((button) => {
-  button.addEventListener('click', () => {
-    const action = button.dataset.readerAction;
+    bars.forEach((bar) => {
+      const bounds = bar.getBoundingClientRect();
+      const distance = Math.abs(pointerY - bounds.top - bounds.height / 2);
+      const wave = Math.exp(-0.5 * (distance / 22) ** 2);
 
-    if (action === 'bookmark') {
-      toggleBookmark();
-    } else if (
-      action === 'progress'
-      || action === 'contents'
-      || action === 'appearance'
-    ) {
-      setReaderPanel(
-        activePanel === action ? null : action,
-        { invoker: button },
-      );
+      if (!reducedMotion.matches) {
+        bar.style.setProperty('--hover-wave', (wave < 0.01 ? 0 : wave).toFixed(3));
+      }
+      if (distance < closestDistance) {
+        closestBar = bar;
+        closestDistance = distance;
+      }
+    });
+    if (!closestBar) {
+      return;
     }
+    const barBounds = closestBar.getBoundingClientRect();
+    const bodyBounds = readerMinimapLabel.parentElement?.getBoundingClientRect();
+    const labelY = bodyBounds
+      ? barBounds.top + barBounds.height / 2 - bodyBounds.top
+      : 0;
+
+    readerMinimapLabel.textContent = closestBar.dataset.title ?? activeBook.title;
+    readerMinimapLabel.style.setProperty('--label-y', `${labelY.toFixed(1)}px`);
+    readerMinimapLabel.setAttribute('aria-hidden', 'false');
+    readerMinimap.dataset.labelVisible = 'true';
   });
 });
-queryRequired<HTMLButtonElement>('[data-reader-panel-close]').addEventListener('click', () => {
-  setReaderPanel(null);
+readerProgress.addEventListener('pointerleave', () => {
+  window.cancelAnimationFrame(minimapMotionFrame ?? 0);
+  readerMinimapBars.querySelectorAll<HTMLElement>('.reader-minimap-bar')
+    .forEach((bar) => bar.style.removeProperty('--hover-wave'));
+  delete readerMinimap.dataset.labelVisible;
+  readerMinimapLabel.setAttribute('aria-hidden', 'true');
 });
+
+const startProgressScrub = () => {
+  progressScrubbing = true;
+  readerSurface.classList.add('is-scrubbing');
+};
+
+const finishProgressScrub = () => {
+  if (!progressScrubbing) {
+    return;
+  }
+  progressScrubbing = false;
+  readerSurface.classList.remove('is-scrubbing');
+  updateReaderNavigation();
+  saveCurrentProgress();
+};
+
+progressSlider.addEventListener('pointerdown', startProgressScrub);
 progressSlider.addEventListener('input', () => {
-  if (paginationInProgress) {
+  if (readingDocumentPreparing) {
     return;
   }
 
-  spreadIndex = Number(progressSlider.value);
-  renderSpread();
-  const firstPage = spreadIndex * 2 + 1;
-  const lastPage = Math.min(firstPage + 1, pages.length);
+  startProgressScrub();
+  readerSurface.scrollTop = getScrollRange() * Number(progressSlider.value) / 100;
+  const percent = Number(progressSlider.value);
 
-  readerStatus.textContent = `已跳到第 ${firstPage} 至 ${lastPage} 页`;
+  setSegmentedProgress(readerProgress, progressPercent, percent);
+  updateMinimapBars(percent / 100);
   setReaderControls(true);
 });
-progressSlider.addEventListener('change', saveCurrentProgress);
-readerSurface.addEventListener('click', (event) => {
-  if (mode !== 'reading') {
+progressSlider.addEventListener('change', finishProgressScrub);
+progressSlider.addEventListener('pointerup', finishProgressScrub);
+progressSlider.addEventListener('pointercancel', finishProgressScrub);
+progressSlider.addEventListener('blur', finishProgressScrub);
+readerSurface.addEventListener('scroll', () => {
+  if (scrollProgressFrame !== undefined) {
     return;
   }
-
-  const selection = window.getSelection();
-  const target = event.target instanceof Element ? event.target : null;
-  if (
-    selection?.toString().trim()
-    || target?.closest('button, input, a')
-  ) {
-    return;
-  }
-
-  setReaderControls(readerView.dataset.controls !== 'visible');
-});
-readerView.addEventListener('pointermove', (event) => {
-  if (mode !== 'reading') {
-    return;
-  }
-
-  if (event.clientY > window.innerHeight - 112) {
-    setReaderControls(true);
-  }
-});
-readerChrome.forEach((chrome) => {
-  chrome.addEventListener('pointerenter', () => window.clearTimeout(controlsTimer));
-  chrome.addEventListener('pointerleave', scheduleReaderControlsHide);
-  chrome.addEventListener('focusin', () => window.clearTimeout(controlsTimer));
-  chrome.addEventListener('focusout', () => requestAnimationFrame(() => {
-    if (!chrome.contains(document.activeElement)) {
+  scrollProgressFrame = requestAnimationFrame(() => {
+    scrollProgressFrame = undefined;
+    updateReaderNavigation();
+    window.clearTimeout(scrollProgressSaveTimer);
+    scrollProgressSaveTimer = window.setTimeout(saveCurrentProgress, 180);
+  });
+}, { passive: true });
+readerControlSurfaces.forEach((surface) => {
+  surface.addEventListener('pointerenter', () => window.clearTimeout(controlsTimer));
+  surface.addEventListener('pointerleave', scheduleReaderControlsHide);
+  surface.addEventListener('focusin', () => window.clearTimeout(controlsTimer));
+  surface.addEventListener('focusout', () => requestAnimationFrame(() => {
+    if (!surface.contains(document.activeElement)) {
       scheduleReaderControlsHide();
     }
   }));
-});
-
-const syncSoundButton = () => {
-  const label = soundEnabled ? '纸张声效已开启' : '纸张声效已关闭';
-
-  soundButton.setAttribute('aria-pressed', String(soundEnabled));
-  soundButton.setAttribute('aria-label', label);
-  soundButton.title = label;
-};
-
-soundButton.addEventListener('click', () => {
-  soundEnabled = !soundEnabled;
-  localStorage.setItem(SOUND_KEY, String(soundEnabled));
-  const context = audioContext;
-  const master = audioMaster;
-
-  if (context && master) {
-    const now = context.currentTime;
-    master.gain.cancelScheduledValues(now);
-    master.gain.setValueAtTime(master.gain.value, now);
-    master.gain.linearRampToValueAtTime(soundEnabled ? 1 : 0, now + 0.018);
-  }
-
-  syncSoundButton();
-  showToast(soundEnabled ? '纸张声效已开启' : '纸张声效已关闭');
-  if (soundEnabled) {
-    primeAudio();
-    noiseBurst(0, 0.08, 1400, 0.009);
-  } else if (context?.state === 'running') {
-    void context.suspend();
-  }
 });
 
 const changeFontSize = (step: number) => {
@@ -3172,7 +3847,6 @@ const changeFontSize = (step: number) => {
   }
 
   applyAppearance({ ...appearance, fontSize: nextSize });
-  requestRepagination();
 };
 
 settingsOptions.addEventListener('submit', (event) => {
@@ -3183,14 +3857,8 @@ settingsOptions.addEventListener('submit', (event) => {
   if (!nextAppearance) {
     return;
   }
-  const layoutChanged = nextAppearance.fontFamily !== appearance.fontFamily
-    || nextAppearance.fontSize !== appearance.fontSize;
-
   applyAppearance(nextAppearance);
   appearanceMessage.textContent = '已应用';
-  if (layoutChanged) {
-    requestRepagination();
-  }
 });
 
 settingsOptions.addEventListener('input', (event) => {
@@ -3201,10 +3869,7 @@ settingsOptions.addEventListener('input', (event) => {
   appearanceMessage.textContent = '';
   if (event.target === foregroundInput) {
     event.target.value = event.target.value.toUpperCase();
-    updateColorPreview(foregroundInput, 'foreground');
-  } else if (event.target === backgroundInput) {
-    event.target.value = event.target.value.toUpperCase();
-    updateColorPreview(backgroundInput, 'background');
+    updateFontColorPreview();
   }
 
   const appearancePanelOpen = (
@@ -3223,45 +3888,30 @@ settingsOptions.addEventListener('input', (event) => {
     if (!nextAppearance) {
       return;
     }
-    const layoutChanged = nextAppearance.fontFamily !== appearance.fontFamily
-      || nextAppearance.fontSize !== appearance.fontSize;
-
     applyAppearance(nextAppearance, true, false);
-    if (mode === 'reading' && layoutChanged) {
-      requestRepagination();
-    }
   }, 160);
 });
 
-settingsOptions.addEventListener('change', (event) => {
+settingsOptions.addEventListener('change', () => {
   window.clearTimeout(appearanceInputTimer);
   const nextAppearance = readAppearanceForm();
 
   if (!nextAppearance) {
     return;
   }
-  const layoutChanged = nextAppearance.fontFamily !== appearance.fontFamily
-    || nextAppearance.fontSize !== appearance.fontSize;
-
   applyAppearance(nextAppearance);
-  if (mode === 'reading' && layoutChanged) {
-    requestRepagination();
-  }
 });
 
 appearanceResetButton.addEventListener('click', () => {
-  const layoutChanged = appearance.fontFamily !== defaultAppearance.fontFamily
-    || appearance.fontSize !== defaultAppearance.fontSize;
-
   applyAppearance({ ...defaultAppearance });
   resetAppearanceFormState();
   appearanceMessage.textContent = '已恢复默认';
-  if (layoutChanged) {
-    requestRepagination();
-  }
 });
 
 document.addEventListener('pointerdown', (event) => {
+  if (mode === 'library') {
+    scheduleLibraryIdleReturn();
+  }
   if (
     activeLandingPanel
     && event.target instanceof Node
@@ -3274,9 +3924,29 @@ document.addEventListener('pointerdown', (event) => {
     activePanel
     && event.target instanceof Node
     && !readerPanel.contains(event.target)
-    && !(event.target instanceof Element && event.target.closest('[data-reader-action]'))
   ) {
     setReaderPanel(null, { restoreFocus: false });
+  }
+  if (
+    activeLibraryPanel
+    && !importInProgress
+    && event.target instanceof Node
+    && !libraryPanel.contains(event.target)
+    && !(event.target instanceof Element && event.target.closest('[data-library-action]'))
+  ) {
+    setLibraryPanel(null, { restoreFocus: false });
+  }
+});
+
+libraryView.addEventListener('wheel', scheduleLibraryIdleReturn, { passive: true });
+libraryView.addEventListener('drop', scheduleLibraryIdleReturn);
+window.addEventListener('focus', scheduleLibraryIdleReturn);
+window.addEventListener('blur', clearLibraryIdleTimer);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    scheduleLibraryIdleReturn();
+  } else {
+    clearLibraryIdleTimer();
   }
 });
 
@@ -3285,32 +3955,40 @@ const handleReaderCommand = (command: ReaderCommand) => {
     if (mode === 'library') {
       importInput.click();
     } else {
-      showToast('请先返回书架，再导入书籍');
+      announceStatus('请先返回书架，再导入书籍');
     }
     return;
   }
 
   if (mode !== 'reading') {
-    showToast('打开一本书后即可使用这项操作');
+    announceStatus('打开一本书后即可使用这项操作');
     return;
   }
 
   if (command === 'toggle-bookmark') {
     toggleBookmark();
   } else if (command === 'show-contents') {
-    setReaderPanel('contents');
+    progressSlider.focus({ preventScroll: true });
   } else if (command === 'toggle-reader-controls') {
-    setReaderControls(readerView.dataset.controls !== 'visible');
+    if (readerMinimap.contains(document.activeElement)) {
+      readerSurface.focus({ preventScroll: true });
+    } else {
+      progressSlider.focus({ preventScroll: true });
+    }
   }
 };
 
 const unsubscribeReaderCommands = window.yuguang?.onReaderCommand(handleReaderCommand);
 window.addEventListener('beforeunload', () => {
   unsubscribeReaderCommands?.();
+  clearLibraryIdleTimer();
   stopThinkingOrb();
 });
 
 window.addEventListener('keydown', (event) => {
+  if (mode === 'library') {
+    scheduleLibraryIdleReturn();
+  }
   if (event.metaKey && event.key === ',') {
     if (mode === 'landing') {
       event.preventDefault();
@@ -3326,7 +4004,7 @@ window.addEventListener('keydown', (event) => {
       event.preventDefault();
       setReaderPanel(
         activePanel === 'appearance' ? null : 'appearance',
-        { invoker: settingsTrigger },
+        { invoker: readerSurface },
       );
     }
     return;
@@ -3339,7 +4017,7 @@ window.addEventListener('keydown', (event) => {
       changeFontSize(1);
     } else if (mode === 'reading') {
       event.preventDefault();
-      setReaderPanel('appearance', { invoker: settingsTrigger });
+      setReaderPanel('appearance', { invoker: readerSurface });
       changeFontSize(1);
     }
     return;
@@ -3352,7 +4030,7 @@ window.addEventListener('keydown', (event) => {
       changeFontSize(-1);
     } else if (mode === 'reading') {
       event.preventDefault();
-      setReaderPanel('appearance', { invoker: settingsTrigger });
+      setReaderPanel('appearance', { invoker: readerSurface });
       changeFontSize(-1);
     }
     return;
@@ -3365,15 +4043,14 @@ window.addEventListener('keydown', (event) => {
     ) {
       event.preventDefault();
       applyAppearance({ ...appearance, fontSize: defaultAppearance.fontSize });
-      requestRepagination();
     }
     return;
   }
 
   if (event.metaKey && event.key.toLowerCase() === 'k') {
     event.preventDefault();
-    if (mode === 'library') {
-      setLibraryLens(true);
+    if (mode === 'library' && !libraryOpenInProgress) {
+      setLibraryPanel('search', { invoker: librarySearchButton });
     }
     return;
   }
@@ -3388,10 +4065,9 @@ window.addEventListener('keydown', (event) => {
     return;
   }
 
-  if (event.key === 'Escape' && libraryLens.classList.contains('is-open')) {
+  if (event.key === 'Escape' && activeLibraryPanel && !importInProgress) {
     event.preventDefault();
-    setLibraryLens(false);
-    libraryOpenButton.focus({ preventScroll: true });
+    setLibraryPanel(null);
     return;
   }
 
@@ -3399,7 +4075,7 @@ window.addEventListener('keydown', (event) => {
     event.preventDefault();
     openRequestRevision += 1;
     loadingBookId = null;
-    showToast('已取消打开');
+    announceStatus('已取消打开');
     return;
   }
 
@@ -3428,56 +4104,18 @@ window.addEventListener('keydown', (event) => {
   if (mode !== 'reading') {
     return;
   }
-
-  const target = event.target;
-  const isInteractive = target instanceof Element
-    && Boolean(target.closest('button, a, input, select, textarea, [contenteditable]'));
-
-  if (isInteractive || event.metaKey || event.ctrlKey || event.altKey) {
-    return;
-  }
-
-  if (
-    event.key === 'ArrowRight'
-    || event.key === 'ArrowDown'
-    || event.key === 'PageDown'
-    || event.key === ' '
-  ) {
-    event.preventDefault();
-    turnPage('forward');
-  } else if (
-    event.key === 'ArrowLeft'
-    || event.key === 'ArrowUp'
-    || event.key === 'PageUp'
-  ) {
-    event.preventDefault();
-    turnPage('backward');
-  }
 });
 
 const handleLayoutGeometryChange = () => {
-  const nextSignature = getLayoutSignature();
-
-  if (nextSignature === observedLayoutSignature) {
-    return;
-  }
-  observedLayoutSignature = nextSignature;
   if (mode !== 'reading' && mode !== 'opening') {
     return;
   }
-
-  markLayoutStale();
-  window.clearTimeout(resizeTimer);
-  resizeTimer = window.setTimeout(() => {
-    if (
-      pendingLayout
-      && mode === 'reading'
-      && !turnInProgress
-      && !paginationInProgress
-    ) {
-      void repaginateActiveBook();
-    }
-  }, 180);
+  requestAnimationFrame(() => {
+    refreshReadingLayout();
+    renderReaderMinimapBars();
+    updateReaderNavigation();
+    renderProgressBookmarks();
+  });
 };
 
 const readerResizeObserver = new ResizeObserver(handleLayoutGeometryChange);
@@ -3486,28 +4124,27 @@ window.addEventListener('resize', handleLayoutGeometryChange);
 
 appearance = readAppearance();
 readingProgress = readProgress();
-readerBookmarks = readBookmarks();
-soundEnabled = readSoundEnabled();
-syncSoundButton();
+readerPins = readPins();
 applyAppearance(appearance, false);
-observedLayoutSignature = getLayoutSignature();
 setLandingPanel(null, { restoreFocus: false });
 setReaderPanel(null, { restoreFocus: false });
+setLibraryPanel(null, { restoreFocus: false });
 setMode('landing');
 stopThinkingOrb = createThinkingOrb(thinkingOrbCanvas, reducedMotion);
-renderImportedBooks();
-renderLibraryLens();
+renderLibrarySearch();
 updateCurrentBookEntry();
 void loadImportedBookMetadata()
   .then((storedBooks) => {
     importedBooks = storedBooks;
     if (!getBookSummaryById(lastOpenedBookId)) {
-      lastOpenedBookId = books[0].id;
-      localStorage.setItem(LAST_BOOK_KEY, lastOpenedBookId);
+      lastOpenedBookId = getManagedBooks()[0]?.id ?? '';
+      if (lastOpenedBookId) {
+        localStorage.setItem(LAST_BOOK_KEY, lastOpenedBookId);
+      } else {
+        localStorage.removeItem(LAST_BOOK_KEY);
+      }
     }
-    renderImportedBooks();
-    renderLibraryLens();
+    renderLibrarySearch();
     updateCurrentBookEntry();
   })
-  .catch(() => showToast('本地书架暂时无法读取'));
-renderSpread();
+  .catch(() => announceStatus('本地书库暂时无法读取'));

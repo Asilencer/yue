@@ -54,7 +54,7 @@ const installApplicationMenu = () => {
           click: () => sendReaderCommand('toggle-bookmark'),
         },
         {
-          label: '显示目录',
+          label: '显示阅读位置',
           accelerator: 'Command+T',
           click: () => sendReaderCommand('show-contents'),
         },

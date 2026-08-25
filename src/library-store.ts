@@ -1,3 +1,84 @@
+import type {
+  List,
+  ListItem,
+  PhrasingContent,
+  Root,
+  RootContent,
+  Table,
+} from 'mdast';
+import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import remarkParse from 'remark-parse';
+import { unified } from 'unified';
+import { readDocumentFile } from './document-import';
+
+export type ImportedBookChapter = {
+  title: string;
+  level: 1 | 2 | 3;
+  paragraphIndex: number;
+};
+
+export type TableAlignment = 'left' | 'center' | 'right';
+
+export type ImportedInlineMark = 'strong' | 'emphasis' | 'delete';
+
+export type ImportedInlineRun = {
+  kind: 'text' | 'code' | 'math' | 'break';
+  value: string;
+  marks?: ImportedInlineMark[];
+};
+
+type ImportedInlineContent = {
+  inlines?: ImportedInlineRun[];
+};
+
+export type ImportedBookFormat =
+  | ({
+      kind: 'rich-text';
+      paragraphIndex: number;
+      inlines: ImportedInlineRun[];
+    })
+  | ({
+      kind: 'heading';
+      paragraphIndex: number;
+      level: 1 | 2 | 3 | 4 | 5 | 6;
+    } & ImportedInlineContent)
+  | ({
+      kind: 'list-item';
+      paragraphIndex: number;
+      groupId: number;
+      ordered: boolean;
+      ordinal: number;
+      depth: number;
+      checked?: boolean;
+    } & ImportedInlineContent)
+  | {
+      kind: 'table-row';
+      paragraphIndex: number;
+      groupId: number;
+      header: boolean;
+      cells: string[];
+      cellInlines?: Array<ImportedInlineRun[] | null>;
+      alignments: TableAlignment[];
+    }
+  | ({
+      kind: 'blockquote';
+      paragraphIndex: number;
+    } & ImportedInlineContent)
+  | {
+      kind: 'code-block';
+      paragraphIndex: number;
+      language: string;
+    }
+  | {
+      kind: 'math-block';
+      paragraphIndex: number;
+    }
+  | {
+      kind: 'thematic-break';
+      paragraphIndex: number;
+    };
+
 export type ImportedBookRecord = {
   id: string;
   title: string;
@@ -5,19 +86,29 @@ export type ImportedBookRecord = {
   color: string;
   chapterTitle: string;
   paragraphs: string[];
+  chapters: ImportedBookChapter[];
+  formats: ImportedBookFormat[];
+  sourceFormat?: ImportedSourceFormat;
   imported: true;
   createdAt: number;
 };
 
-export type ImportedBookMetadata = Omit<ImportedBookRecord, 'paragraphs'>;
+export type ImportedBookMetadata = Omit<
+  ImportedBookRecord,
+  'paragraphs' | 'chapters' | 'formats'
+>;
+
+export type ParseImportedBookOptions = {
+  onProgress?: (progress: number) => void;
+};
+
+export type ImportedSourceFormat = 'markdown' | 'txt' | 'pdf' | 'epub';
 
 const DATABASE_NAME = 'yuguang-library';
 const DATABASE_VERSION = 2;
 const METADATA_STORE_NAME = 'books';
 const CONTENT_STORE_NAME = 'bookContents';
 const SCHEMA_VERSION = 2;
-const MAX_FILE_SIZE = 2 * 1024 * 1024;
-const supportedExtensions = new Set(['txt', 'md', 'markdown']);
 const coverColors = ['#5276c7', '#5c7f70', '#ef8b74', '#c99a52', '#6b657f'];
 
 type StoredBookMetadata = ImportedBookMetadata & {
@@ -27,6 +118,8 @@ type StoredBookMetadata = ImportedBookMetadata & {
 type StoredBookContent = {
   id: string;
   paragraphs: string[];
+  chapters: ImportedBookChapter[];
+  formats: ImportedBookFormat[];
   schemaVersion: typeof SCHEMA_VERSION;
 };
 
@@ -34,12 +127,264 @@ const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === 'object' && value !== null && !Array.isArray(value)
 );
 
+const readBookChapters = (
+  value: unknown,
+  paragraphCount: number,
+): ImportedBookChapter[] | null => {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const chapters: ImportedBookChapter[] = [];
+
+  for (const chapter of value) {
+    if (!isRecord(chapter)) {
+      return null;
+    }
+
+    const { title, level, paragraphIndex } = chapter;
+    if (
+      typeof title !== 'string'
+      || !title.trim()
+      || (level !== 1 && level !== 2 && level !== 3)
+      || typeof paragraphIndex !== 'number'
+      || !Number.isInteger(paragraphIndex)
+      || paragraphIndex < 0
+      || paragraphIndex >= paragraphCount
+    ) {
+      return null;
+    }
+    chapters.push({ title, level, paragraphIndex });
+  }
+  return chapters;
+};
+
+const isTableAlignment = (value: unknown): value is TableAlignment => (
+  value === 'left' || value === 'center' || value === 'right'
+);
+
+const isInlineMark = (value: unknown): value is ImportedInlineMark => (
+  value === 'strong' || value === 'emphasis' || value === 'delete'
+);
+
+const readInlineRuns = (
+  value: unknown,
+  paragraph: string,
+): ImportedInlineRun[] | null | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || !value.length) {
+    return null;
+  }
+
+  const runs: ImportedInlineRun[] = [];
+
+  for (const run of value) {
+    if (!isRecord(run)) {
+      return null;
+    }
+    const { kind, value: runValue, marks } = run;
+    if (
+      (kind !== 'text' && kind !== 'code' && kind !== 'math' && kind !== 'break')
+      || typeof runValue !== 'string'
+      || !runValue
+      || (kind === 'break' && runValue !== '\n')
+      || (
+        marks !== undefined
+        && (
+          !Array.isArray(marks)
+          || !marks.length
+          || marks.some((mark) => !isInlineMark(mark))
+          || new Set(marks).size !== marks.length
+        )
+      )
+    ) {
+      return null;
+    }
+    runs.push({
+      kind,
+      value: runValue,
+      ...(Array.isArray(marks) ? { marks: [...marks] as ImportedInlineMark[] } : {}),
+    });
+  }
+  return runs.map((run) => run.value).join('') === paragraph ? runs : null;
+};
+
+const readBookFormats = (
+  value: unknown,
+  paragraphs: readonly string[],
+): ImportedBookFormat[] | null => {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const formats: ImportedBookFormat[] = [];
+  const formattedParagraphs = new Set<number>();
+
+  for (const format of value) {
+    if (!isRecord(format)) {
+      return null;
+    }
+
+    const { kind, paragraphIndex } = format;
+    if (
+      typeof paragraphIndex !== 'number'
+      || !Number.isInteger(paragraphIndex)
+      || paragraphIndex < 0
+      || paragraphIndex >= paragraphs.length
+      || formattedParagraphs.has(paragraphIndex)
+    ) {
+      return null;
+    }
+
+    const inlines = readInlineRuns(format.inlines, paragraphs[paragraphIndex]);
+    if (inlines === null) {
+      return null;
+    }
+
+    if (kind === 'rich-text') {
+      if (!inlines) {
+        return null;
+      }
+      formats.push({ kind, paragraphIndex, inlines });
+    } else if (kind === 'heading') {
+      const { level } = format;
+      if (
+        level !== 1
+        && level !== 2
+        && level !== 3
+        && level !== 4
+        && level !== 5
+        && level !== 6
+      ) {
+        return null;
+      }
+      formats.push({ kind, paragraphIndex, level, ...(inlines ? { inlines } : {}) });
+    } else if (kind === 'list-item') {
+      const { groupId, ordered, ordinal, depth, checked } = format;
+      if (
+        typeof groupId !== 'number'
+        || !Number.isInteger(groupId)
+        || groupId < 0
+        || typeof ordered !== 'boolean'
+        || typeof ordinal !== 'number'
+        || !Number.isInteger(ordinal)
+        || ordinal < 0
+        || typeof depth !== 'number'
+        || !Number.isInteger(depth)
+        || depth < 0
+        || depth > 6
+        || (checked !== undefined && typeof checked !== 'boolean')
+      ) {
+        return null;
+      }
+      const normalizedChecked = typeof checked === 'boolean' ? checked : undefined;
+
+      formats.push({
+        kind,
+        paragraphIndex,
+        groupId,
+        ordered,
+        ordinal,
+        depth,
+        ...(normalizedChecked === undefined ? {} : { checked: normalizedChecked }),
+        ...(inlines ? { inlines } : {}),
+      });
+    } else if (kind === 'table-row') {
+      const {
+        groupId,
+        header,
+        cells,
+        cellInlines,
+        alignments,
+      } = format;
+      if (
+        typeof groupId !== 'number'
+        || !Number.isInteger(groupId)
+        || groupId < 0
+        || typeof header !== 'boolean'
+        || !Array.isArray(cells)
+        || !cells.length
+        || !cells.every((cell) => typeof cell === 'string')
+        || !Array.isArray(alignments)
+        || !alignments.every(isTableAlignment)
+        || (
+          cellInlines !== undefined
+          && (!Array.isArray(cellInlines) || cellInlines.length !== cells.length)
+        )
+      ) {
+        return null;
+      }
+      const normalizedCellInlines: Array<ImportedInlineRun[] | null> = [];
+
+      if (Array.isArray(cellInlines)) {
+        for (let index = 0; index < cellInlines.length; index += 1) {
+          if (cellInlines[index] === null) {
+            normalizedCellInlines.push(null);
+            continue;
+          }
+          const cellRuns = readInlineRuns(cellInlines[index], cells[index]);
+          if (!cellRuns) {
+            return null;
+          }
+          normalizedCellInlines.push(cellRuns);
+        }
+      }
+      const normalizedAlignments = cells.map((_, index) => (
+        isTableAlignment(alignments[index]) ? alignments[index] : 'left'
+      ));
+      formats.push({
+        kind,
+        paragraphIndex,
+        groupId,
+        header,
+        cells,
+        ...(normalizedCellInlines.length ? { cellInlines: normalizedCellInlines } : {}),
+        alignments: normalizedAlignments,
+      });
+    } else if (kind === 'blockquote') {
+      formats.push({ kind, paragraphIndex, ...(inlines ? { inlines } : {}) });
+    } else if (kind === 'code-block') {
+      const { language } = format;
+      if (typeof language !== 'string') {
+        return null;
+      }
+      formats.push({ kind, paragraphIndex, language });
+    } else if (kind === 'math-block') {
+      formats.push({ kind, paragraphIndex });
+    } else if (kind === 'thematic-break') {
+      formats.push({ kind, paragraphIndex });
+    } else {
+      return null;
+    }
+
+    formattedParagraphs.add(paragraphIndex);
+  }
+  return formats;
+};
+
 const readBookMetadata = (value: unknown): ImportedBookMetadata | null => {
   if (!isRecord(value)) {
     return null;
   }
 
-  const { id, title, author, color, chapterTitle, imported, createdAt } = value;
+  const {
+    id,
+    title,
+    author,
+    color,
+    chapterTitle,
+    sourceFormat,
+    imported,
+    createdAt,
+  } = value;
   if (
     typeof id !== 'string'
     || !id
@@ -48,6 +393,13 @@ const readBookMetadata = (value: unknown): ImportedBookMetadata | null => {
     || typeof author !== 'string'
     || typeof color !== 'string'
     || typeof chapterTitle !== 'string'
+    || (
+      sourceFormat !== undefined
+      && sourceFormat !== 'markdown'
+      && sourceFormat !== 'txt'
+      && sourceFormat !== 'pdf'
+      && sourceFormat !== 'epub'
+    )
     || imported !== true
     || typeof createdAt !== 'number'
     || !Number.isFinite(createdAt)
@@ -56,7 +408,20 @@ const readBookMetadata = (value: unknown): ImportedBookMetadata | null => {
     return null;
   }
 
-  return { id, title, author, color, chapterTitle, imported, createdAt };
+  const normalizedSourceFormat = typeof sourceFormat === 'string'
+    ? sourceFormat as ImportedSourceFormat
+    : undefined;
+
+  return {
+    id,
+    title,
+    author,
+    color,
+    chapterTitle,
+    ...(normalizedSourceFormat ? { sourceFormat: normalizedSourceFormat } : {}),
+    imported,
+    createdAt,
+  };
 };
 
 const readImportedBook = (value: unknown): ImportedBookRecord | null => {
@@ -75,7 +440,13 @@ const readImportedBook = (value: unknown): ImportedBookRecord | null => {
     return null;
   }
 
-  return { ...metadata, paragraphs };
+  const chapters = readBookChapters(value.chapters, paragraphs.length);
+  const formats = readBookFormats(value.formats, paragraphs);
+  if (!chapters || !formats) {
+    return null;
+  }
+
+  return { ...metadata, paragraphs, chapters, formats };
 };
 
 const readStoredMetadata = (value: unknown): ImportedBookMetadata | null => {
@@ -101,9 +472,17 @@ const readStoredContent = (value: unknown): StoredBookContent | null => {
     return null;
   }
 
+  const chapters = readBookChapters(value.chapters, value.paragraphs.length);
+  const formats = readBookFormats(value.formats, value.paragraphs);
+  if (!chapters || !formats) {
+    return null;
+  }
+
   return {
     id: value.id,
     paragraphs: value.paragraphs,
+    chapters,
+    formats,
     schemaVersion: SCHEMA_VERSION,
   };
 };
@@ -114,6 +493,7 @@ const toStoredMetadata = (book: ImportedBookRecord): StoredBookMetadata => ({
   author: book.author,
   color: book.color,
   chapterTitle: book.chapterTitle,
+  ...(book.sourceFormat ? { sourceFormat: book.sourceFormat } : {}),
   imported: true,
   createdAt: book.createdAt,
   schemaVersion: SCHEMA_VERSION,
@@ -122,6 +502,8 @@ const toStoredMetadata = (book: ImportedBookRecord): StoredBookMetadata => ({
 const toStoredContent = (book: ImportedBookRecord): StoredBookContent => ({
   id: book.id,
   paragraphs: book.paragraphs,
+  chapters: book.chapters,
+  formats: book.formats,
   schemaVersion: SCHEMA_VERSION,
 });
 
@@ -221,52 +603,640 @@ const openDatabase = () => new Promise<IDBDatabase>((resolve, reject) => {
   );
 });
 
-const normalizeInlineMarkdown = (value: string) => value
-  .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
-  .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-  .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]\s)\s*/gm, '')
-  .replace(/[*_~`]/g, '')
-  .replace(/\s+/g, ' ')
-  .trim();
+const normalizePlainText = (value: string) => value.replace(/\s+/g, ' ').trim();
 
-const splitLongParagraph = (paragraph: string) => {
-  if (paragraph.length <= 420) {
-    return [paragraph];
+const unicodeLength = (value: string) => Array.from(value).length;
+
+const truncateUnicode = (value: string, maximumLength: number) => (
+  Array.from(value).slice(0, maximumLength).join('')
+);
+
+type MarkdownHeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
+
+const markdownParser = unified()
+  .use(remarkParse)
+  .use(remarkGfm, { singleTilde: false })
+  .use(remarkMath);
+const eastAsianCharacterPattern = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u3000-\u303f\uff01-\uff60]/u;
+
+const parseMarkdownAst = (source: string) => markdownParser.parse(source) as Root;
+
+const normalizeMarkdownTextNode = (value: string) => value
+  .replace(/[ \t]*\r?\n[ \t]*/g, (lineBreak, offset: number) => {
+    const left = value[offset - 1] ?? '';
+    const right = value[offset + lineBreak.length] ?? '';
+
+    return eastAsianCharacterPattern.test(left)
+      && eastAsianCharacterPattern.test(right)
+      ? ''
+      : ' ';
+  })
+  .replace(/[ \t]+/g, ' ');
+
+const appendInlineRun = (
+  runs: ImportedInlineRun[],
+  kind: ImportedInlineRun['kind'],
+  rawValue: string,
+  marks: readonly ImportedInlineMark[] = [],
+) => {
+  const value = kind === 'text'
+    ? normalizeMarkdownTextNode(rawValue)
+    : kind === 'code'
+      ? rawValue
+      : kind === 'math'
+        ? rawValue.trim()
+        : '\n';
+
+  if (!value || (kind === 'break' && runs.at(-1)?.kind === 'break')) {
+    return;
+  }
+  const normalizedMarks = kind !== 'break' && marks.length
+    ? [...new Set(marks)]
+    : undefined;
+  const previous = runs.at(-1);
+  const sameMarks = (previous?.marks ?? []).join('\0')
+    === (normalizedMarks ?? []).join('\0');
+
+  if (kind === 'text' && previous?.kind === 'text' && sameMarks) {
+    previous.value += value;
+  } else {
+    runs.push({ kind, value, ...(normalizedMarks ? { marks: normalizedMarks } : {}) });
+  }
+};
+
+const collectInlineRuns = (
+  nodes: readonly PhrasingContent[],
+  runs: ImportedInlineRun[] = [],
+  marks: readonly ImportedInlineMark[] = [],
+) => {
+  nodes.forEach((node) => {
+    if (node.type === 'text') {
+      appendInlineRun(runs, 'text', node.value, marks);
+    } else if (node.type === 'inlineCode') {
+      appendInlineRun(runs, 'code', node.value, marks);
+    } else if (node.type === 'inlineMath') {
+      appendInlineRun(runs, 'math', node.value, marks);
+    } else if (node.type === 'break') {
+      appendInlineRun(runs, 'break', '\n');
+    } else if (node.type === 'image' || node.type === 'imageReference') {
+      appendInlineRun(runs, 'text', node.alt ?? '', marks);
+    } else if (node.type === 'footnoteReference') {
+      appendInlineRun(runs, 'text', `［${node.label ?? node.identifier}］`, marks);
+    } else if (node.type === 'html') {
+      if (/^<br\s*\/?\s*>$/i.test(node.value.trim())) {
+        appendInlineRun(runs, 'break', '\n');
+      }
+    } else if (
+      node.type === 'strong'
+      || node.type === 'emphasis'
+      || node.type === 'delete'
+    ) {
+      const mark: ImportedInlineMark = node.type;
+
+      collectInlineRuns(node.children, runs, [...marks, mark]);
+    } else {
+      const parent = node as unknown as { children?: PhrasingContent[] };
+      if (parent.children) {
+        collectInlineRuns(parent.children, runs, marks);
+      }
+    }
+  });
+  return runs;
+};
+
+const trimInlineRuns = (runs: ImportedInlineRun[]) => {
+  while (runs[0]?.kind === 'break') {
+    runs.shift();
+  }
+  while (runs.at(-1)?.kind === 'break') {
+    runs.pop();
+  }
+  if (runs[0]?.kind === 'text') {
+    runs[0].value = runs[0].value.trimStart();
+  }
+  const last = runs.at(-1);
+  if (last?.kind === 'text') {
+    last.value = last.value.trimEnd();
+  }
+  return runs.filter((run) => run.value);
+};
+
+const normalizeInlineRuns = (nodes: readonly PhrasingContent[]) => (
+  trimInlineRuns(collectInlineRuns(nodes))
+);
+
+const inlineRunsText = (runs: readonly ImportedInlineRun[]) => (
+  runs.map((run) => run.value).join('')
+);
+
+const findMarkdownTitle = (tree: Root) => {
+  const heading = tree.children.find((node) => (
+    node.type === 'heading' && node.depth === 1
+  ));
+
+  return heading?.type === 'heading'
+    ? inlineRunsText(normalizeInlineRuns(heading.children)) || undefined
+    : undefined;
+};
+
+const yamlFrontMatterKeys = new Set([
+  'title',
+  'author',
+  'creator',
+  'date',
+  'language',
+  'lang',
+  'description',
+  'tags',
+]);
+
+const stripConservativeYamlFrontMatter = (source: string) => {
+  const lines = source.split('\n');
+  if (lines[0] !== '---') {
+    return source;
   }
 
-  const sentences = paragraph.match(/[^。！？!?；;]+[。！？!?；;]?/g) ?? [paragraph];
-  const chunks: string[] = [];
-  let current = '';
+  let closingIndex = -1;
+  const searchLimit = Math.min(lines.length, 65);
 
-  sentences.forEach((sentence) => {
-    if (current && current.length + sentence.length > 320) {
-      chunks.push(current.trim());
-      current = '';
+  for (let index = 1; index < searchLimit; index += 1) {
+    if (lines[index] === '---' || lines[index] === '...') {
+      closingIndex = index;
+      break;
     }
+  }
 
-    if (sentence.length > 420) {
-      if (current.trim()) {
-        chunks.push(current.trim());
-        current = '';
-      }
+  if (closingIndex < 0) {
+    return source;
+  }
 
-      for (let offset = 0; offset < sentence.length; offset += 320) {
-        const part = sentence.slice(offset, offset + 320).trim();
-        if (part) {
-          chunks.push(part);
-        }
-      }
+  const metadataLines = lines.slice(1, closingIndex)
+    .filter((line) => line.trim() && !line.trimStart().startsWith('#'));
+  const fields = metadataLines.map((line) => (
+    line.match(/^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*.*$/)
+  ));
+  if (
+    !fields.length
+    || fields.some((field) => !field)
+    || !fields.some((field) => yamlFrontMatterKeys.has(field?.[1].toLowerCase() ?? ''))
+  ) {
+    return source;
+  }
+
+  const contentLines = lines.slice(closingIndex + 1);
+  if (!contentLines[0]) {
+    contentLines.shift();
+  }
+  return contentLines.join('\n');
+};
+
+const parseMarkdownContent = (tree: Root, title: string) => {
+  const paragraphs: string[] = [];
+  const chapters: ImportedBookChapter[] = [];
+  const formats: ImportedBookFormat[] = [];
+  let firstTitleHeadingHandled = false;
+  let nextGroupId = 1;
+
+  type InlineBlockFormat = Extract<
+    ImportedBookFormat,
+    { kind: 'heading' | 'list-item' | 'blockquote' }
+  >;
+
+  const appendInlineBlock = (
+    runs: ImportedInlineRun[],
+    createFormat?: (paragraphIndex: number) => InlineBlockFormat,
+  ) => {
+    const normalizedRuns = trimInlineRuns(runs);
+    const text = inlineRunsText(normalizedRuns);
+    if (!text.trim()) {
       return;
     }
 
-    current += sentence;
+    const hasInlineFormatting = normalizedRuns.some((run) => (
+      run.kind !== 'text' || run.marks?.length
+    ));
+    if (!createFormat && !hasInlineFormatting) {
+      paragraphs.push(text);
+      return;
+    }
+
+    const paragraphIndex = paragraphs.length;
+
+    paragraphs.push(text);
+    if (createFormat) {
+      const format = createFormat(paragraphIndex);
+
+      formats.push(hasInlineFormatting
+        ? { ...format, inlines: normalizedRuns }
+        : format);
+    } else {
+      formats.push({ kind: 'rich-text', paragraphIndex, inlines: normalizedRuns });
+    }
+  };
+  const appendCodeBlock = (value: string, language: string) => {
+    const paragraphIndex = paragraphs.length;
+
+    paragraphs.push(value || ' ');
+    formats.push({
+      kind: 'code-block',
+      paragraphIndex,
+      language: language.slice(0, 48),
+    });
+  };
+  const appendMathBlock = (value: string) => {
+    const paragraphIndex = paragraphs.length;
+
+    paragraphs.push(value.trim() || ' ');
+    formats.push({ kind: 'math-block', paragraphIndex });
+  };
+  const appendHeading = (
+    runs: ImportedInlineRun[],
+    level: MarkdownHeadingLevel,
+  ) => {
+    const headingTitle = inlineRunsText(runs).trim();
+    const isTitleHeading = level === 1
+      && !firstTitleHeadingHandled
+      && headingTitle === title;
+
+    if (!headingTitle) {
+      return;
+    }
+    if (isTitleHeading) {
+      firstTitleHeadingHandled = true;
+      return;
+    }
+
+    const paragraphIndex = paragraphs.length;
+
+    if (level <= 3) {
+      chapters.push({
+        title: headingTitle,
+        level: level as 1 | 2 | 3,
+        paragraphIndex,
+      });
+    }
+    appendInlineBlock(
+      runs,
+      (index) => ({ kind: 'heading', paragraphIndex: index, level }),
+    );
+  };
+  const appendTableRow = (
+    cells: string[],
+    cellInlines: Array<ImportedInlineRun[] | null>,
+    alignments: TableAlignment[],
+    groupId: number,
+    header: boolean,
+  ) => {
+    const text = cells.join(' ｜ ').trim() || '—';
+    const paragraphIndex = paragraphs.length;
+
+    paragraphs.push(text);
+    formats.push({
+      kind: 'table-row',
+      paragraphIndex,
+      groupId,
+      header,
+      cells,
+      ...(cellInlines.some(Boolean) ? { cellInlines } : {}),
+      alignments,
+    });
+  };
+  const appendTable = (table: Table) => {
+    const groupId = nextGroupId;
+    const alignments = table.align.map((alignment) => alignment ?? 'left');
+
+    nextGroupId += 1;
+    table.children.forEach((row, rowIndex) => {
+      const runsByCell = row.children.map((cell) => normalizeInlineRuns(cell.children));
+      const cells = runsByCell.map(inlineRunsText);
+      const cellInlines = runsByCell.map((runs) => (
+        runs.some((run) => run.kind !== 'text' || run.marks?.length) ? runs : null
+      ));
+      const rowAlignments = cells.map((_, index) => alignments[index] ?? 'left');
+
+      appendTableRow(cells, cellInlines, rowAlignments, groupId, rowIndex === 0);
+    });
+  };
+  const collectListItemRuns = (item: ListItem) => {
+    const runs: ImportedInlineRun[] = [];
+
+    item.children.forEach((child) => {
+      if (child.type === 'list') {
+        return;
+      }
+      const childRuns: ImportedInlineRun[] = [];
+      if (child.type === 'paragraph' || child.type === 'heading') {
+        collectInlineRuns(child.children, childRuns);
+      } else if (child.type === 'code') {
+        appendInlineRun(childRuns, 'code', child.value);
+      } else if (child.type === 'math') {
+        appendInlineRun(childRuns, 'math', child.value);
+      } else if (child.type === 'blockquote') {
+        child.children.forEach((quoteChild) => {
+          if (quoteChild.type === 'paragraph' || quoteChild.type === 'heading') {
+            if (childRuns.length) {
+              appendInlineRun(childRuns, 'break', '\n');
+            }
+            collectInlineRuns(quoteChild.children, childRuns);
+          }
+        });
+      }
+      if (trimInlineRuns(childRuns).length) {
+        if (runs.length) {
+          appendInlineRun(runs, 'break', '\n');
+        }
+        runs.push(...childRuns);
+      }
+    });
+    return trimInlineRuns(runs);
+  };
+  const appendList = (list: List, groupId: number, depth = 0) => {
+    const ordered = Boolean(list.ordered);
+    const start = list.start ?? 1;
+
+    list.children.forEach((item, index) => {
+      const runs = collectListItemRuns(item);
+      const paragraphIndex = paragraphs.length;
+
+      if (runs.length) {
+        appendInlineBlock(
+          runs,
+          (nextParagraphIndex) => ({
+            kind: 'list-item',
+            paragraphIndex: nextParagraphIndex,
+            groupId,
+            ordered,
+            ordinal: ordered ? start + index : index + 1,
+            depth: Math.min(depth, 6),
+            ...(item.checked === null ? {} : { checked: item.checked }),
+          }),
+        );
+      } else {
+        paragraphs.push(' ');
+        formats.push({
+          kind: 'list-item',
+          paragraphIndex,
+          groupId,
+          ordered,
+          ordinal: ordered ? start + index : index + 1,
+          depth: Math.min(depth, 6),
+          ...(item.checked === null ? {} : { checked: item.checked }),
+        });
+      }
+
+      item.children.forEach((child) => {
+        if (child.type === 'list') {
+          appendList(child, groupId, depth + 1);
+        }
+      });
+    });
+  };
+  const processBlocks = (nodes: readonly RootContent[], quoted = false) => {
+    nodes.forEach((node) => {
+      if (node.type === 'paragraph') {
+        appendInlineBlock(
+          normalizeInlineRuns(node.children),
+          quoted
+            ? (paragraphIndex) => ({ kind: 'blockquote', paragraphIndex })
+            : undefined,
+        );
+      } else if (node.type === 'heading') {
+        appendHeading(
+          normalizeInlineRuns(node.children),
+          node.depth as MarkdownHeadingLevel,
+        );
+      } else if (node.type === 'code') {
+        appendCodeBlock(node.value, node.lang ?? '');
+      } else if (node.type === 'math') {
+        appendMathBlock(node.value);
+      } else if (node.type === 'blockquote') {
+        processBlocks(node.children, true);
+      } else if (node.type === 'list') {
+        const groupId = nextGroupId;
+
+        nextGroupId += 1;
+        appendList(node, groupId);
+      } else if (node.type === 'table') {
+        appendTable(node);
+      } else if (node.type === 'thematicBreak') {
+        const paragraphIndex = paragraphs.length;
+
+        paragraphs.push('—');
+        formats.push({ kind: 'thematic-break', paragraphIndex });
+      } else if (node.type === 'html') {
+        const text = normalizePlainText(node.value.replace(/<[^>]*>/g, ' '));
+
+        if (text) {
+          paragraphs.push(text);
+        }
+      } else if (node.type === 'footnoteDefinition') {
+        processBlocks(node.children, true);
+      }
+    });
+  };
+
+  processBlocks(tree.children);
+  return { paragraphs, chapters, formats };
+};
+
+const plainTextChapterNumber = String.raw`[\p{Script=Han}〇零一二三四五六七八九十百千万\d]+`;
+const plainTextHeadingPattern = new RegExp(
+  String.raw`^(?:第${plainTextChapterNumber}[章节回部卷篇](?:\s+.*)?`
+    + String.raw`|卷[\p{Script=Han}\d]+(?:\s+.*)?`
+    + String.raw`|序章|序言|前言|楔子|尾声|后记|跋`
+    + String.raw`|Chapter\s+\d+(?:[.:：\s].*)?)$`,
+  'iu',
+);
+const plainTextListPattern = /^(\s*)(?:(\d{1,4})[.)、]|[-+*•])\s+(.+)$/u;
+const plainTextSceneBreakPattern = /^\s*(?:[-—–_=＊*·•]\s*){3,}$/u;
+const plainTextTerminalPattern = /[。！？!?；;…][”’"'）》】〕」』]*$/u;
+const cjkBoundaryPattern = /[\u2e80-\u9fff\uf900-\ufaff]/u;
+const plainTextCodePattern = new RegExp(
+  String.raw`(?:[{};]|=>`
+    + String.raw`|^\s*(?:const|let|var|function|class|interface|type|import|export)\b`
+    + String.raw`|^\s*(?:def|from|if|for|while|return)\b`
+    + String.raw`|^\s*#include\b`
+    + String.raw`|^\s*[\w.[\]'"-]+\s*=\s*\S)`,
+  'iu',
+);
+
+const medianOf = (values: readonly number[]) => {
+  const sorted = [...values].sort((left, right) => left - right);
+
+  return sorted[Math.floor(sorted.length / 2)] ?? 0;
+};
+
+const looksPreformattedText = (lines: readonly string[]) => {
+  const indented = lines.filter((line) => /^(?:\t| {4})/.test(line)).length;
+  const codeSyntax = lines.filter((line) => (
+    plainTextCodePattern.test(line)
+  )).length;
+  const columnar = lines.filter((line) => (
+    line.includes('\t') || /\S(?: {2,}\S){2,}/u.test(line)
+  )).length;
+  const logs = lines.filter((line) => (
+    /^\s*(?:\d{4}-\d{2}-\d{2}|\[?\d{2}:\d{2}:\d{2}|TRACE\b|DEBUG\b|INFO\b|WARN\b|ERROR\b)/i
+      .test(line)
+  )).length;
+
+  return /^\s*(?:```|~~~)/.test(lines[0] ?? '')
+    || (
+      lines.length > 1
+      && indented >= Math.max(2, Math.ceil(lines.length * 0.5))
+      && codeSyntax >= Math.max(1, Math.ceil(lines.length * 0.25))
+    )
+    || columnar >= Math.max(2, Math.ceil(lines.length * 0.6))
+    || logs >= Math.max(2, Math.ceil(lines.length * 0.6));
+};
+
+const looksHardWrappedProse = (lines: readonly string[]) => {
+  if (lines.length < 3 || looksPreformattedText(lines)) {
+    return false;
+  }
+  const trimmed = lines.map((line) => line.trim());
+  if (
+    trimmed.some((line) => (
+      plainTextHeadingPattern.test(line)
+      || plainTextListPattern.test(line)
+      || plainTextSceneBreakPattern.test(line)
+    ))
+  ) {
+    return false;
+  }
+  const lengths = trimmed.map(unicodeLength);
+  const median = medianOf(lengths);
+  const regularLines = lengths.slice(0, -1).filter((length) => (
+    length >= median * 0.7 && length <= median * 1.35
+  )).length;
+  const terminalLines = trimmed.slice(0, -1).filter((line) => (
+    plainTextTerminalPattern.test(line)
+  )).length;
+  const prosePunctuationLines = trimmed.slice(0, -1).filter((line) => (
+    /[，,；;：:]/u.test(line)
+  )).length;
+  const lastLineIsShort = (lengths.at(-1) ?? median) <= median * 0.82;
+
+  return median >= 32
+    && regularLines >= Math.ceil((lines.length - 1) * 0.75)
+    && terminalLines <= Math.floor((lines.length - 1) * 0.45)
+    && prosePunctuationLines >= Math.ceil((lines.length - 1) * 0.25)
+    && lastLineIsShort;
+};
+
+const joinPlainTextLines = (left: string, right: string) => {
+  const normalizedLeft = left.trim();
+  const normalizedRight = right.trim();
+  const leftCharacter = normalizedLeft.at(-1) ?? '';
+  const rightCharacter = normalizedRight[0] ?? '';
+  const separator = cjkBoundaryPattern.test(leftCharacter)
+    || cjkBoundaryPattern.test(rightCharacter)
+    ? ''
+    : ' ';
+
+  return `${normalizedLeft}${separator}${normalizedRight}`;
+};
+
+const preservedLineRuns = (lines: readonly string[]): ImportedInlineRun[] => (
+  lines.flatMap((line, index) => [
+    ...(index ? [{ kind: 'break', value: '\n' } as ImportedInlineRun] : []),
+    { kind: 'text', value: line.trim().normalize('NFC') } as ImportedInlineRun,
+  ])
+);
+
+const parsePlainTextContent = (source: string, title: string) => {
+  const paragraphs: string[] = [];
+  const chapters: ImportedBookChapter[] = [];
+  const formats: ImportedBookFormat[] = [];
+  let nextGroupId = 1;
+
+  const appendParagraph = (text: string, runs?: ImportedInlineRun[]) => {
+    const normalized = text.normalize('NFC').trim();
+    if (!normalized || normalized === title) {
+      return;
+    }
+    const paragraphIndex = paragraphs.length;
+
+    paragraphs.push(normalized);
+    if (runs) {
+      formats.push({ kind: 'rich-text', paragraphIndex, inlines: runs });
+    }
+  };
+
+  source.split(/\n[ \t]*\n+/).forEach((block) => {
+    const lines = block.split('\n').map((line) => line.trimEnd()).filter((line) => line.trim());
+    if (!lines.length) {
+      return;
+    }
+    const trimmed = lines.map((line) => line.trim());
+    const heading = trimmed.length === 1 && plainTextHeadingPattern.test(trimmed[0]);
+    if (heading) {
+      if (trimmed[0] !== title) {
+        const paragraphIndex = paragraphs.length;
+
+        paragraphs.push(trimmed[0]);
+        chapters.push({ title: trimmed[0], level: 1, paragraphIndex });
+        formats.push({ kind: 'heading', paragraphIndex, level: 2 });
+      }
+      return;
+    }
+    if (trimmed.length === 1 && plainTextSceneBreakPattern.test(trimmed[0])) {
+      const paragraphIndex = paragraphs.length;
+
+      paragraphs.push('—');
+      formats.push({ kind: 'thematic-break', paragraphIndex });
+      return;
+    }
+    const listMatches = lines.map((line) => line.match(plainTextListPattern));
+    if (listMatches.every(Boolean)) {
+      const groupId = nextGroupId;
+
+      nextGroupId += 1;
+      listMatches.forEach((match, index) => {
+        if (!match) {
+          return;
+        }
+        const paragraphIndex = paragraphs.length;
+        const ordered = Boolean(match[2]);
+
+        paragraphs.push(match[3].trim());
+        formats.push({
+          kind: 'list-item',
+          paragraphIndex,
+          groupId,
+          ordered,
+          ordinal: ordered ? Number(match[2]) : index + 1,
+          depth: Math.min(Math.floor(match[1].replace(/\t/g, '  ').length / 2), 6),
+        });
+      });
+      return;
+    }
+    if (looksPreformattedText(lines)) {
+      const paragraphIndex = paragraphs.length;
+      const fence = /^\s*(```|~~~)/.exec(lines[0]);
+      const content = fence
+        && lines.length > 1
+        && lines.at(-1)?.trim().startsWith(fence[1])
+        ? lines.slice(1, -1)
+        : lines;
+
+      paragraphs.push(content.join('\n').normalize('NFC') || ' ');
+      formats.push({ kind: 'code-block', paragraphIndex, language: '' });
+      return;
+    }
+    if (trimmed.length === 1) {
+      appendParagraph(trimmed[0]);
+      return;
+    }
+    if (looksHardWrappedProse(lines)) {
+      appendParagraph(trimmed.reduce(joinPlainTextLines));
+      return;
+    }
+    const text = trimmed.join('\n').normalize('NFC');
+
+    appendParagraph(text, preservedLineRuns(trimmed));
   });
 
-  if (current.trim()) {
-    chunks.push(current.trim());
-  }
-
-  return chunks;
+  return { paragraphs, chapters, formats };
 };
 
 const hashTitle = (title: string) => Array.from(title)
@@ -282,58 +1252,57 @@ const createBookId = async (title: string, source: string) => {
   return `imported-${fingerprint}`;
 };
 
-export const parseImportedBook = async (file: File): Promise<ImportedBookRecord> => {
-  const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
-
-  if (!supportedExtensions.has(extension)) {
-    throw new Error('目前支持 TXT 和 Markdown');
-  }
-
-  if (file.size > MAX_FILE_SIZE) {
-    throw new Error('单本文件暂时不能超过 2 MB');
-  }
-
-  let decoded: string;
-
-  try {
-    decoded = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer());
-  } catch {
-    throw new Error('文件不是有效的 UTF-8 文本');
-  }
-
-  if (decoded.includes('\0')) {
-    throw new Error('文件包含不支持的二进制内容');
-  }
-
-  const source = decoded.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
-  const markdownTitle = extension !== 'txt'
-    ? source.match(/^\s{0,3}#\s+(.+)$/m)?.[1]?.trim()
-    : undefined;
-  const fileTitle = file.name.replace(/\.(?:txt|md|markdown)$/i, '').trim();
-  const title = normalizeInlineMarkdown(markdownTitle || fileTitle || '未命名书籍').slice(0, 48);
-  const cleaned = extension === 'txt'
-    ? source
-    : source
-      .replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, '')
-      .replace(/```[\s\S]*?```/g, '')
-      .replace(/^\s{0,3}#\s+.+$/m, '');
-  const paragraphs = cleaned
-    .split(/\n\s*\n+/)
-    .map((paragraph) => normalizeInlineMarkdown(paragraph.replace(/\n+/g, ' ')))
-    .filter((paragraph) => paragraph && paragraph !== title)
-    .flatMap(splitLongParagraph);
+export const parseImportedBook = async (
+  file: File,
+  options: ParseImportedBookOptions = {},
+): Promise<ImportedBookRecord> => {
+  const document = await readDocumentFile(file, {
+    onProgress: (progress) => options.onProgress?.(progress * 0.72),
+  });
+  const cleaned = document.markdown
+    ? stripConservativeYamlFrontMatter(document.source)
+    : document.source;
+  const markdownTree = document.markdown ? parseMarkdownAst(cleaned) : undefined;
+  const markdownTitle = markdownTree ? findMarkdownTitle(markdownTree) : undefined;
+  const fileTitle = file.name.replace(/\.(?:txt|md|markdown|pdf|epub)$/i, '').trim();
+  const title = truncateUnicode(
+    normalizePlainText(
+      document.title || markdownTitle || fileTitle || '未命名书籍',
+    ),
+    48,
+  );
+  const parsedContent = markdownTree
+    ? parseMarkdownContent(markdownTree, title)
+    : parsePlainTextContent(cleaned, title);
+  const { paragraphs, chapters, formats } = parsedContent;
+  options.onProgress?.(0.84);
 
   if (!paragraphs.length) {
     throw new Error('文件中没有可阅读的正文');
   }
 
+  const id = await createBookId(title, document.source);
+  options.onProgress?.(1);
+
   return {
-    id: await createBookId(title, source),
+    id,
     title,
-    author: '本地导入',
+    author: truncateUnicode(
+      normalizePlainText(document.author || '本地导入'),
+      48,
+    ),
     color: coverColors[hashTitle(title) % coverColors.length],
     chapterTitle: title,
     paragraphs,
+    chapters,
+    formats,
+    sourceFormat: file.name.toLowerCase().endsWith('.txt')
+      ? 'txt'
+      : file.name.toLowerCase().endsWith('.pdf')
+        ? 'pdf'
+        : file.name.toLowerCase().endsWith('.epub')
+          ? 'epub'
+          : 'markdown',
     imported: true,
     createdAt: Date.now(),
   };
@@ -403,7 +1372,14 @@ export const loadImportedBooks = async (): Promise<ImportedBookRecord[]> => {
       .flatMap((metadata): ImportedBookRecord[] => {
         const content = contentById.get(metadata.id);
 
-        return content ? [{ ...metadata, paragraphs: content.paragraphs }] : [];
+        return content
+          ? [{
+              ...metadata,
+              paragraphs: content.paragraphs,
+              chapters: content.chapters,
+              formats: content.formats,
+            }]
+          : [];
       });
   } finally {
     database.close();
@@ -444,7 +1420,12 @@ export const loadImportedBook = async (id: string): Promise<ImportedBookRecord> 
       throw new Error(`书籍正文数据已损坏：${id}`);
     }
 
-    return { ...metadata, paragraphs: content.paragraphs };
+    return {
+      ...metadata,
+      paragraphs: content.paragraphs,
+      chapters: content.chapters,
+      formats: content.formats,
+    };
   } finally {
     database.close();
   }
@@ -531,7 +1512,12 @@ export const deleteImportedBook = async (id: string): Promise<ImportedBookRecord
           return;
         }
 
-        deletedBook = { ...metadata, paragraphs: content.paragraphs };
+        deletedBook = {
+          ...metadata,
+          paragraphs: content.paragraphs,
+          chapters: content.chapters,
+          formats: content.formats,
+        };
         metadataStore.delete(id);
         contentStore.delete(id);
       };
