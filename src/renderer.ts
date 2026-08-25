@@ -34,10 +34,18 @@ import pageTurnBackwardOne from './assets/audio/page-turn-backward-01.ogg';
 import pageTurnBackwardTwo from './assets/audio/page-turn-backward-02.ogg';
 import pageTurnForwardOne from './assets/audio/page-turn-forward-01.ogg';
 import pageTurnForwardTwo from './assets/audio/page-turn-forward-02.ogg';
-import libraryImage from './assets/scenes/city-morning-library.png';
+import distanceCover from './assets/covers/distance-cover.jpg';
+import lakeCover from './assets/covers/lake-cover.jpg';
+import lettersCover from './assets/covers/letters-cover.jpg';
+import northCover from './assets/covers/north-cover.jpg';
+import notesCover from './assets/covers/notes-cover.jpg';
+import plantsCover from './assets/covers/plants-cover.jpg';
+import routeCover from './assets/covers/route-cover.jpg';
+import springCover from './assets/covers/spring-cover.jpg';
+import landingCityDusk from './assets/scenes/landing-city-dusk-v2.png';
+import landingCityMorning from './assets/scenes/landing-city-morning-v2.png';
+import landingCoastAfternoon from './assets/scenes/landing-coast-afternoon-v2.png';
 import landingImage from './assets/scenes/landing-mountain-morning-v2.png';
-import coastOutlook from './assets/scenes/outlook-coast-afternoon.png';
-import duskOutlook from './assets/scenes/outlook-city-dusk.png';
 import type { ReaderCommand } from './global';
 import {
   deleteImportedBook,
@@ -61,8 +69,7 @@ import { createThinkingOrb } from './thinking-orb';
 type AppMode = 'landing' | 'library' | 'opening' | 'reading' | 'closing';
 type Direction = 'forward' | 'backward';
 type ReaderPanel = 'appearance';
-type LandingPanel = 'background' | 'appearance';
-type LibraryPanel = 'search' | 'import';
+type LibraryPanel = 'search' | 'import' | 'background' | 'appearance';
 type LibraryCategory = 'all' | 'reading' | 'finished';
 type OpenBookResult = 'opened' | 'cancelled' | 'failed';
 type BookMaterial = 'cloth' | 'paper' | 'aged';
@@ -71,6 +78,13 @@ const libraryCategoryLabels: Record<LibraryCategory, string> = {
   all: '全部',
   reading: '在读',
   finished: '已读',
+};
+
+const libraryPanelLabels: Record<LibraryPanel, string> = {
+  search: '搜索书籍',
+  import: '导入书籍',
+  background: '背景图',
+  appearance: 'UI 配置',
 };
 
 type SourcePage = {
@@ -99,6 +113,7 @@ type Book = {
   formats?: ImportedBookFormat[];
   sourceFormat?: ImportedSourceFormat;
   material?: BookMaterial;
+  cover?: string;
   imported?: boolean;
 };
 
@@ -156,22 +171,22 @@ const landingScenes = [
   {
     id: 'coast',
     label: '午后海岸',
-    src: coastOutlook,
+    src: landingCoastAfternoon,
     position: 'center',
     ink: 'dark',
   },
   {
     id: 'city-dusk',
     label: '黄昏都市',
-    src: duskOutlook,
+    src: landingCityDusk,
     position: 'center',
     ink: 'light',
   },
   {
     id: 'city-morning',
     label: '清晨街景',
-    src: libraryImage,
-    position: 'right center',
+    src: landingCityMorning,
+    position: 'center',
     ink: 'dark',
   },
 ] as const;
@@ -189,6 +204,7 @@ const books: Book[] = [
     author: '林望',
     color: '#5276c7',
     material: 'cloth',
+    cover: lakeCover,
   },
   {
     id: 'spring',
@@ -196,6 +212,7 @@ const books: Book[] = [
     author: '许青禾',
     color: '#86b99c',
     material: 'paper',
+    cover: springCover,
   },
   {
     id: 'letters',
@@ -203,6 +220,7 @@ const books: Book[] = [
     author: '周野',
     color: '#ef8b74',
     material: 'aged',
+    cover: lettersCover,
   },
   {
     id: 'north',
@@ -210,6 +228,7 @@ const books: Book[] = [
     author: '沈舟',
     color: '#273f58',
     material: 'aged',
+    cover: northCover,
   },
   {
     id: 'plants',
@@ -217,6 +236,7 @@ const books: Book[] = [
     author: '简森',
     color: '#5c7f70',
     material: 'cloth',
+    cover: plantsCover,
   },
   {
     id: 'route',
@@ -224,6 +244,7 @@ const books: Book[] = [
     author: '陈屿',
     color: '#f2d164',
     material: 'paper',
+    cover: routeCover,
   },
   {
     id: 'notes',
@@ -231,6 +252,7 @@ const books: Book[] = [
     author: '白榆',
     color: '#5276c7',
     material: 'cloth',
+    cover: notesCover,
   },
   {
     id: 'distance',
@@ -238,6 +260,7 @@ const books: Book[] = [
     author: '陶然',
     color: '#ef8b74',
     material: 'paper',
+    cover: distanceCover,
   },
 ];
 
@@ -393,11 +416,6 @@ const reiconImageMountain = `
   <circle cx="7.3333" cy="5.3333" r="2.3333" />
 `;
 
-const reiconSettings4 = `
-  <circle cx="12" cy="12" r="4.5" />
-  <path d="M2 12h5M17 12h5" />
-`;
-
 const reiconBook2 = `
   <path
     d="M22 16.7399V4.6699c0-1.2-.98-2.09-2.17-1.99h-.06
@@ -536,15 +554,14 @@ const reiconTickCircle = `
 
 const readerIconPaths = {
   library: reiconBook2,
-  libraryHome: reiconArrowLeft2,
   minimapReturn: reiconReply2,
   minimapPin: reiconBookmark2,
   previous: reiconArrowLeft2,
   next: reiconArrowRight2,
   contents: reiconBookSaved,
   bookmark: reiconBookmark2,
-  landingBackground: reiconImageMountain,
-  landingAppearance: reiconSettings4,
+  libraryBackground: reiconImageMountain,
+  libraryAppearance: reiconSetting4,
   appearanceFont: reiconFeather,
   appearanceSize: reiconSize,
   appearanceLineHeight: reiconParagraphSpacing,
@@ -572,13 +589,13 @@ const renderReaderIcon = (name: ReaderIconName) => `
   >${readerIconPaths[name]}</svg>
 `;
 
-const renderLandingSceneButtons = () => landingScenes
+const renderBackgroundSceneButtons = () => landingScenes
   .map((scene, index) => `
     <button
       type="button"
       class="landing-scene-option"
-      data-landing-scene-index="${index}"
-      aria-label="使用${scene.label}作为首页背景"
+      data-background-scene-index="${index}"
+      aria-label="使用${scene.label}作为背景图"
       aria-pressed="${index === initialLandingSceneIndex}"
     >
       <img src="${scene.src}" alt="" />
@@ -625,45 +642,6 @@ app.innerHTML = `
         </span>
       </button>
 
-      <nav class="landing-dock config-dock" aria-label="首页设置">
-        <button
-          class="landing-control-button config-button"
-          data-landing-action="background"
-          aria-label="设置首页背景"
-          title="设置首页背景"
-          aria-expanded="false"
-          aria-controls="landing-control-hub"
-        >${renderReaderIcon('landingBackground')}</button>
-        <span class="landing-dock-divider config-divider" aria-hidden="true"></span>
-        <button
-          class="landing-control-button config-button"
-          data-landing-action="appearance"
-          aria-label="设置首页排版"
-          title="设置首页排版"
-          aria-expanded="false"
-          aria-controls="landing-control-hub"
-        >${renderReaderIcon('landingAppearance')}</button>
-      </nav>
-
-      <section
-        class="landing-hub config-panel"
-        id="landing-control-hub"
-        data-landing-panel
-        aria-label="首页设置"
-        aria-hidden="true"
-        inert
-      >
-        <div class="landing-hub-view" data-landing-panel-view="background">
-          <div class="landing-scene-options">
-            ${renderLandingSceneButtons()}
-          </div>
-        </div>
-        <div
-          class="landing-hub-view"
-          data-landing-panel-view="appearance"
-          data-landing-appearance-mount
-        ></div>
-      </section>
     </section>
 
     <section
@@ -726,19 +704,15 @@ app.innerHTML = `
       </div>
 
       <nav class="landing-dock library-dock config-dock" aria-label="书架工具">
-        <div class="library-dock-group" role="group" aria-label="导航">
+        <div class="library-dock-group" role="group" aria-label="书籍工具">
           <button
             class="landing-control-button config-button"
-            data-return-home
-            aria-label="返回首页"
-            title="返回首页"
-          >${renderReaderIcon('libraryHome')}</button>
-        </div>
-        <span
-          class="landing-dock-divider library-dock-divider config-divider"
-          aria-hidden="true"
-        ></span>
-        <div class="library-dock-group" role="group" aria-label="书籍工具">
+            data-library-action="search"
+            aria-label="搜索书籍"
+            title="搜索书籍"
+            aria-expanded="false"
+            aria-controls="library-control-hub"
+          >${renderReaderIcon('librarySearch')}</button>
           <button
             class="landing-control-button config-button"
             data-library-action="import"
@@ -749,12 +723,20 @@ app.innerHTML = `
           >${renderReaderIcon('libraryImport')}</button>
           <button
             class="landing-control-button config-button"
-            data-library-action="search"
-            aria-label="搜索书籍"
-            title="搜索书籍"
+            data-library-action="background"
+            aria-label="设置背景图"
+            title="设置背景图"
             aria-expanded="false"
             aria-controls="library-control-hub"
-          >${renderReaderIcon('librarySearch')}</button>
+          >${renderReaderIcon('libraryBackground')}</button>
+          <button
+            class="landing-control-button config-button"
+            data-library-action="appearance"
+            aria-label="UI 配置"
+            title="UI 配置"
+            aria-expanded="false"
+            aria-controls="library-control-hub"
+          >${renderReaderIcon('libraryAppearance')}</button>
         </div>
       </nav>
 
@@ -811,6 +793,21 @@ app.innerHTML = `
             </div>
           </div>
         </div>
+
+        <div
+          class="landing-hub-view library-background-view"
+          data-library-panel-view="background"
+        >
+          <div class="landing-scene-options">
+            ${renderBackgroundSceneButtons()}
+          </div>
+        </div>
+
+        <div
+          class="library-hub-view library-appearance-view"
+          data-library-panel-view="appearance"
+          data-library-appearance-mount
+        ></div>
       </section>
 
     </section>
@@ -963,17 +960,17 @@ app.innerHTML = `
                   placeholder="1.75"
                 />
               </label>
-              <label class="appearance-field" data-reader-only>
+              <label class="appearance-field">
                 <span class="appearance-field-label">
                   ${renderReaderIcon('appearanceForeground')}
-                  <span>字体色</span>
+                  <span>字体颜色</span>
                 </span>
                 <span class="appearance-color-input">
                   <span data-color-preview="foreground" aria-hidden="true"></span>
                   <input
                     data-appearance-input="foreground"
                     type="text"
-                    aria-label="字体色"
+                    aria-label="字体颜色"
                     autocomplete="off"
                     spellcheck="false"
                     placeholder="#252B2D"
@@ -1010,19 +1007,12 @@ const landingView = queryRequired<HTMLElement>('.landing-view');
 const enterLibraryButton = queryRequired<HTMLButtonElement>('[data-enter-library]');
 const thinkingOrbCanvas = queryRequired<HTMLCanvasElement>('[data-thinking-orb]');
 const landingSceneImage = queryRequired<HTMLImageElement>('[data-landing-scene]');
-const landingPanel = queryRequired<HTMLElement>('[data-landing-panel]');
-const landingAppearanceMount = queryRequired<HTMLElement>(
-  '[data-landing-appearance-mount]',
-);
-const landingPanelActionButtons = [
-  ...landingView.querySelectorAll<HTMLButtonElement>('[data-landing-action]'),
-];
-const landingSceneButtons = [
-  ...landingView.querySelectorAll<HTMLButtonElement>('[data-landing-scene-index]'),
-];
 const libraryView = queryRequired<HTMLElement>('.library-view');
 const bookHotspots = queryRequired<HTMLElement>('.book-hotspots');
 const librarySceneImage = queryRequired<HTMLImageElement>('[data-library-scene]');
+const backgroundSceneButtons = [
+  ...libraryView.querySelectorAll<HTMLButtonElement>('[data-background-scene-index]'),
+];
 const libraryCategoryButtons = [
   ...libraryView.querySelectorAll<HTMLButtonElement>('[data-library-category]'),
 ];
@@ -1041,7 +1031,6 @@ const readerStatus = queryRequired<HTMLElement>('[data-reader-status]');
 const appStatus = queryRequired<HTMLElement>('[data-app-status]');
 const importInput = queryRequired<HTMLInputElement>('[data-import-input]');
 const libraryDock = queryRequired<HTMLElement>('.library-dock');
-const returnHomeButton = queryRequired<HTMLButtonElement>('[data-return-home]');
 const libraryPanel = queryRequired<HTMLElement>('[data-library-panel]');
 const librarySearch = queryRequired<HTMLInputElement>('[data-library-search]');
 const librarySearchMeta = queryRequired<HTMLElement>('[data-library-search-meta]');
@@ -1053,6 +1042,12 @@ const libraryImportButton = queryRequired<HTMLButtonElement>(
 );
 const librarySearchButton = queryRequired<HTMLButtonElement>(
   '[data-library-action="search"]',
+);
+const libraryAppearanceButton = queryRequired<HTMLButtonElement>(
+  '[data-library-action="appearance"]',
+);
+const libraryAppearanceMount = queryRequired<HTMLElement>(
+  '[data-library-appearance-mount]',
 );
 const importProgress = queryRequired<HTMLElement>('[data-import-progress]');
 const importStatus = queryRequired<HTMLElement>('[data-import-status]');
@@ -1132,8 +1127,6 @@ let minimapMotionFrame: number | undefined;
 let progressScrubbing = false;
 let activePanel: ReaderPanel | null = null;
 let panelInvoker: HTMLElement | null = null;
-let activeLandingPanel: LandingPanel | null = null;
-let landingPanelInvoker: HTMLElement | null = null;
 let activeLibraryPanel: LibraryPanel | null = null;
 let libraryPanelInvoker: HTMLElement | null = null;
 let matchedLibraryBooks: Book[] = [];
@@ -1145,7 +1138,7 @@ let libraryIdleTimer: number | undefined;
 let libraryReturnInProgress = false;
 let landingSceneIndex = initialLandingSceneIndex;
 let landingSceneRevision = 0;
-let lastOpenedBookId = localStorage.getItem(LAST_BOOK_KEY) ?? books[0].id;
+let lastOpenedBookId = localStorage.getItem(LAST_BOOK_KEY) ?? '';
 let appearance = { ...defaultAppearance };
 let readingProgress: Record<string, number> = {};
 let readerPins: ReaderPins = {};
@@ -1153,7 +1146,7 @@ let stopThinkingOrb: () => void = () => undefined;
 const pendingRemovals = new Map<string, ImportedBookMetadata>();
 const loadedBookCache = new Map<string, Book>();
 const MAX_LOADED_BOOK_CACHE_ENTRIES = 3;
-const LIBRARY_IDLE_RETURN_MS = 5 * 60 * 1000;
+const LIBRARY_IDLE_RETURN_MS = 30 * 1000;
 
 const nextFrame = () =>
   new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -1195,10 +1188,10 @@ const setLandingScene = (nextIndex: number) => {
       libraryView.dataset.uiInk = scene.ink;
       readerSceneImage.src = scene.src;
       readerSceneImage.style.objectPosition = scene.position;
-      landingSceneButtons.forEach((button) => {
+      backgroundSceneButtons.forEach((button) => {
         button.setAttribute(
           'aria-pressed',
-          String(Number(button.dataset.landingSceneIndex) === nextIndex),
+          String(Number(button.dataset.backgroundSceneIndex) === nextIndex),
         );
       });
       localStorage.setItem(LANDING_SCENE_KEY, scene.id);
@@ -1845,7 +1838,7 @@ const readAppearanceForm = (): ReaderAppearance | null => {
   } else if (!validLineHeight) {
     appearanceMessage.textContent = `行距需在 ${MIN_LINE_HEIGHT}–${MAX_LINE_HEIGHT}`;
   } else if (!validForeground) {
-    appearanceMessage.textContent = '字体色请使用 #RGB 或 #RRGGBB';
+    appearanceMessage.textContent = '字体颜色请使用 #RGB 或 #RRGGBB';
   } else {
     appearanceMessage.textContent = '';
   }
@@ -1861,49 +1854,6 @@ const resetAppearanceFormState = () => {
     input.removeAttribute('aria-invalid');
   });
   appearanceMessage.textContent = '';
-};
-
-const setLandingPanel = (
-  panel: LandingPanel | null,
-  options: { invoker?: HTMLElement; restoreFocus?: boolean } = {},
-) => {
-  const restoreTarget = landingPanelInvoker?.isConnected
-    ? landingPanelInvoker
-    : enterLibraryButton;
-
-  if (!panel && options.restoreFocus !== false) {
-    restoreTarget.focus({ preventScroll: true });
-  }
-  if (panel && (options.invoker || !activeLandingPanel)) {
-    landingPanelInvoker = options.invoker
-      ?? landingPanelActionButtons.find((button) => (
-        button.dataset.landingAction === panel
-      ))
-      ?? enterLibraryButton;
-  }
-
-  activeLandingPanel = panel;
-  landingPanel.dataset.open = String(Boolean(panel));
-  landingPanel.toggleAttribute('inert', !panel);
-  landingPanel.setAttribute('aria-hidden', String(!panel));
-  landingPanelActionButtons.forEach((button) => {
-    button.setAttribute(
-      'aria-expanded',
-      String(button.dataset.landingAction === panel),
-    );
-  });
-
-  if (!panel) {
-    delete landingPanel.dataset.panel;
-    landingPanelInvoker = null;
-    return;
-  }
-
-  landingPanel.dataset.panel = panel;
-  if (panel === 'appearance') {
-    landingAppearanceMount.append(settingsOptions);
-    resetAppearanceFormState();
-  }
 };
 
 const getScrollRange = () => Math.max(
@@ -2044,9 +1994,9 @@ const renderReaderMinimapBars = () => {
 };
 
 const updateMinimapBars = (ratio: number) => {
-  const bars = readerMinimapBars.querySelectorAll<HTMLElement>(
-    '.reader-minimap-bar',
-  );
+  const bars = [
+    ...readerMinimapBars.querySelectorAll<HTMLElement>('.reader-minimap-bar'),
+  ];
   let closestBar: HTMLElement | null = null;
   let closestDistance = Number.POSITIVE_INFINITY;
 
@@ -2522,7 +2472,6 @@ const enterLibrary = () => {
     return;
   }
 
-  setLandingPanel(null, { restoreFocus: false });
   enterLibraryButton.classList.add('is-entering');
   landingView.classList.add('is-leaving');
   const duration = reducedMotion.matches ? 120 : 460;
@@ -2532,11 +2481,11 @@ const enterLibrary = () => {
     setMode('library');
     enterLibraryButton.classList.remove('is-entering');
     landingView.classList.remove('is-leaving');
-    const firstBook = bookHotspots.querySelector<HTMLButtonElement>(
-      '.library-book-card-open[data-book-id]',
-    );
+    const activeCategoryButton = libraryCategoryButtons.find((button) => (
+      button.dataset.libraryCategory === activeLibraryCategory
+    ));
 
-    (firstBook ?? libraryImportButton).focus({ preventScroll: true });
+    (activeCategoryButton ?? libraryCategoryButtons[0])?.focus({ preventScroll: true });
   }, duration);
 };
 
@@ -2558,6 +2507,15 @@ const getBookCoverPresentation = (book: Book) => {
   };
 };
 
+const applyBookCoverArt = (element: HTMLElement, cover?: string) => {
+  element.toggleAttribute('data-has-cover-art', Boolean(cover));
+  if (cover) {
+    element.style.setProperty('--book-cover-art', `url("${cover}")`);
+  } else {
+    element.style.removeProperty('--book-cover-art');
+  }
+};
+
 const prepareTransitionBook = (book: Book) => {
   const presentation = getBookCoverPresentation(book);
 
@@ -2565,6 +2523,7 @@ const prepareTransitionBook = (book: Book) => {
   transitionBook.style.setProperty('--book-color', book.color);
   transitionBook.dataset.material = presentation.material;
   transitionBook.dataset.coverVariant = String(presentation.variant);
+  applyBookCoverArt(transitionBook, book.cover);
   transitionBook.classList.add('is-visible');
 };
 
@@ -2975,15 +2934,9 @@ const getPhysicalBookButton = (bookId: string) => (
 );
 
 const replaceRemovedBookReference = (removedBookId: string) => {
-  const fallback = getManagedBooks().find((book) => book.id !== removedBookId);
-
   if (lastOpenedBookId === removedBookId) {
-    lastOpenedBookId = fallback?.id ?? '';
-    if (lastOpenedBookId) {
-      localStorage.setItem(LAST_BOOK_KEY, lastOpenedBookId);
-    } else {
-      localStorage.removeItem(LAST_BOOK_KEY);
-    }
+    lastOpenedBookId = '';
+    localStorage.removeItem(LAST_BOOK_KEY);
   }
 };
 
@@ -3056,6 +3009,7 @@ const createLibraryBookCard = (book: Book, query: string) => {
   card.dataset.finished = String(finished);
   card.dataset.material = presentation.material;
   card.dataset.coverVariant = String(presentation.variant);
+  applyBookCoverArt(card, book.cover);
   card.classList.toggle('is-search-match', Boolean(query) && matched);
   card.classList.toggle('is-search-miss', Boolean(query) && !matched);
   card.toggleAttribute('inert', Boolean(query) && !matched);
@@ -3187,14 +3141,15 @@ const setLibraryPanel = (
   }
 
   libraryPanel.dataset.panel = panel;
-  libraryPanel.setAttribute(
-    'aria-label',
-    panel === 'search' ? '搜索书籍' : '导入书籍',
-  );
+  libraryPanel.setAttribute('aria-label', libraryPanelLabels[panel]);
   if (panel === 'search') {
     renderLibrarySearch();
     requestAnimationFrame(() => librarySearch.focus());
-  } else if (!importInProgress) {
+  } else if (panel === 'appearance') {
+    libraryAppearanceMount.append(settingsOptions);
+    resetAppearanceFormState();
+    requestAnimationFrame(() => fontFamilyInput.focus());
+  } else if (panel === 'import' && !importInProgress) {
     window.clearTimeout(importProgressTimer);
     setImportPresentation(false);
     requestAnimationFrame(() => importChooseButton.focus());
@@ -3209,7 +3164,6 @@ const setLibraryPhase = (phase: 'browsing' | 'placing') => {
   libraryView.toggleAttribute('aria-busy', busy);
   bookHotspots.inert = busy;
   libraryDock.inert = busy;
-  returnHomeButton.disabled = busy;
   if (busy) {
     clearLibraryIdleTimer();
   } else {
@@ -3411,12 +3365,8 @@ const commitPendingRemovals = async () => {
     localStorage.setItem(PINS_KEY, JSON.stringify(readerPins));
     persistFinishedBooks();
     if (deletedIds.has(lastOpenedBookId)) {
-      lastOpenedBookId = getManagedBooks()[0]?.id ?? '';
-      if (lastOpenedBookId) {
-        localStorage.setItem(LAST_BOOK_KEY, lastOpenedBookId);
-      } else {
-        localStorage.removeItem(LAST_BOOK_KEY);
-      }
+      lastOpenedBookId = '';
+      localStorage.removeItem(LAST_BOOK_KEY);
     }
   }
 
@@ -3628,21 +3578,9 @@ importInput.addEventListener('change', () => {
 importChooseButton.addEventListener('click', () => importInput.click());
 
 enterLibraryButton.addEventListener('click', enterLibrary);
-landingPanelActionButtons.forEach((button) => {
+backgroundSceneButtons.forEach((button) => {
   button.addEventListener('click', () => {
-    const action = button.dataset.landingAction;
-
-    if (action === 'background' || action === 'appearance') {
-      setLandingPanel(
-        activeLandingPanel === action ? null : action,
-        { invoker: button },
-      );
-    }
-  });
-});
-landingSceneButtons.forEach((button) => {
-  button.addEventListener('click', () => {
-    const sceneIndex = Number(button.dataset.landingSceneIndex);
+    const sceneIndex = Number(button.dataset.backgroundSceneIndex);
 
     if (Number.isInteger(sceneIndex)) {
       setLandingScene(sceneIndex);
@@ -3650,7 +3588,6 @@ landingSceneButtons.forEach((button) => {
   });
 });
 
-returnHomeButton.addEventListener('click', () => void returnToLanding());
 libraryCategoryButtons.forEach((button) => {
   button.addEventListener('click', () => {
     const category = button.dataset.libraryCategory as LibraryCategory;
@@ -3681,14 +3618,14 @@ libraryActionButtons.forEach((button) => {
   button.addEventListener('click', () => {
     const action = button.dataset.libraryAction;
 
-    if (action === 'import') {
+    if (
+      action === 'search'
+      || action === 'import'
+      || action === 'background'
+      || action === 'appearance'
+    ) {
       setLibraryPanel(
-        activeLibraryPanel === 'import' ? null : 'import',
-        { invoker: button },
-      );
-    } else if (action === 'search') {
-      setLibraryPanel(
-        activeLibraryPanel === 'search' ? null : 'search',
+        activeLibraryPanel === action ? null : action,
         { invoker: button },
       );
     }
@@ -3761,6 +3698,11 @@ readerProgress.addEventListener('pointermove', (event) => {
     if (!closestBar) {
       return;
     }
+    bars.forEach((bar) => bar.classList.toggle(
+      'is-preview-current',
+      bar === closestBar,
+    ));
+    readerMinimap.dataset.previewing = 'true';
     const barBounds = closestBar.getBoundingClientRect();
     const bodyBounds = readerMinimapLabel.parentElement?.getBoundingClientRect();
     const labelY = bodyBounds
@@ -3776,7 +3718,11 @@ readerProgress.addEventListener('pointermove', (event) => {
 readerProgress.addEventListener('pointerleave', () => {
   window.cancelAnimationFrame(minimapMotionFrame ?? 0);
   readerMinimapBars.querySelectorAll<HTMLElement>('.reader-minimap-bar')
-    .forEach((bar) => bar.style.removeProperty('--hover-wave'));
+    .forEach((bar) => {
+      bar.style.removeProperty('--hover-wave');
+      bar.classList.remove('is-preview-current');
+    });
+  delete readerMinimap.dataset.previewing;
   delete readerMinimap.dataset.labelVisible;
   readerMinimapLabel.setAttribute('aria-hidden', 'true');
 });
@@ -3873,7 +3819,7 @@ settingsOptions.addEventListener('input', (event) => {
   }
 
   const appearancePanelOpen = (
-    mode === 'landing' && activeLandingPanel === 'appearance'
+    mode === 'library' && activeLibraryPanel === 'appearance'
   ) || (
     mode === 'reading' && activePanel === 'appearance'
   );
@@ -3913,14 +3859,6 @@ document.addEventListener('pointerdown', (event) => {
     scheduleLibraryIdleReturn();
   }
   if (
-    activeLandingPanel
-    && event.target instanceof Node
-    && !landingPanel.contains(event.target)
-    && !(event.target instanceof Element && event.target.closest('[data-landing-action]'))
-  ) {
-    setLandingPanel(null, { restoreFocus: false });
-  }
-  if (
     activePanel
     && event.target instanceof Node
     && !readerPanel.contains(event.target)
@@ -3939,6 +3877,7 @@ document.addEventListener('pointerdown', (event) => {
 });
 
 libraryView.addEventListener('wheel', scheduleLibraryIdleReturn, { passive: true });
+libraryView.addEventListener('pointermove', scheduleLibraryIdleReturn, { passive: true });
 libraryView.addEventListener('drop', scheduleLibraryIdleReturn);
 window.addEventListener('focus', scheduleLibraryIdleReturn);
 window.addEventListener('blur', clearLibraryIdleTimer);
@@ -3990,15 +3929,11 @@ window.addEventListener('keydown', (event) => {
     scheduleLibraryIdleReturn();
   }
   if (event.metaKey && event.key === ',') {
-    if (mode === 'landing') {
+    if (mode === 'library') {
       event.preventDefault();
-      const invoker = landingPanelActionButtons.find((button) => (
-        button.dataset.landingAction === 'appearance'
-      ));
-
-      setLandingPanel(
-        activeLandingPanel === 'appearance' ? null : 'appearance',
-        { invoker },
+      setLibraryPanel(
+        activeLibraryPanel === 'appearance' ? null : 'appearance',
+        { invoker: libraryAppearanceButton },
       );
     } else if (mode === 'reading') {
       event.preventDefault();
@@ -4011,9 +3946,9 @@ window.addEventListener('keydown', (event) => {
   }
 
   if (event.metaKey && (event.key === '+' || event.key === '=')) {
-    if (mode === 'landing') {
+    if (mode === 'library') {
       event.preventDefault();
-      setLandingPanel('appearance');
+      setLibraryPanel('appearance', { invoker: libraryAppearanceButton });
       changeFontSize(1);
     } else if (mode === 'reading') {
       event.preventDefault();
@@ -4024,9 +3959,9 @@ window.addEventListener('keydown', (event) => {
   }
 
   if (event.metaKey && event.key === '-') {
-    if (mode === 'landing') {
+    if (mode === 'library') {
       event.preventDefault();
-      setLandingPanel('appearance');
+      setLibraryPanel('appearance', { invoker: libraryAppearanceButton });
       changeFontSize(-1);
     } else if (mode === 'reading') {
       event.preventDefault();
@@ -4038,7 +3973,7 @@ window.addEventListener('keydown', (event) => {
 
   if (event.metaKey && event.key === '0') {
     if (
-      (mode === 'landing' || mode === 'reading')
+      (mode === 'library' || mode === 'reading')
       && appearance.fontSize !== defaultAppearance.fontSize
     ) {
       event.preventDefault();
@@ -4057,12 +3992,6 @@ window.addEventListener('keydown', (event) => {
 
   if (event.key === 'Tab' && mode === 'reading') {
     setReaderControls(true);
-  }
-
-  if (event.key === 'Escape' && activeLandingPanel) {
-    event.preventDefault();
-    setLandingPanel(null);
-    return;
   }
 
   if (event.key === 'Escape' && activeLibraryPanel && !importInProgress) {
@@ -4126,7 +4055,6 @@ appearance = readAppearance();
 readingProgress = readProgress();
 readerPins = readPins();
 applyAppearance(appearance, false);
-setLandingPanel(null, { restoreFocus: false });
 setReaderPanel(null, { restoreFocus: false });
 setLibraryPanel(null, { restoreFocus: false });
 setMode('landing');
@@ -4136,13 +4064,9 @@ updateCurrentBookEntry();
 void loadImportedBookMetadata()
   .then((storedBooks) => {
     importedBooks = storedBooks;
-    if (!getBookSummaryById(lastOpenedBookId)) {
-      lastOpenedBookId = getManagedBooks()[0]?.id ?? '';
-      if (lastOpenedBookId) {
-        localStorage.setItem(LAST_BOOK_KEY, lastOpenedBookId);
-      } else {
-        localStorage.removeItem(LAST_BOOK_KEY);
-      }
+    if (lastOpenedBookId && !getBookSummaryById(lastOpenedBookId)) {
+      lastOpenedBookId = '';
+      localStorage.removeItem(LAST_BOOK_KEY);
     }
     renderLibrarySearch();
     updateCurrentBookEntry();

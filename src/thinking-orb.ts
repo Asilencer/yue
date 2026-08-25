@@ -4,9 +4,11 @@ type OrbDot = {
   z: number;
 };
 
-const DOT_COUNT = 320;
+const DOT_COUNT = 428;
 const PERIOD_SECONDS = 4;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+const ORB_RADIUS_RATIO = .442;
+const DOT_RADIUS = .95;
 
 const dots: OrbDot[] = Array.from({ length: DOT_COUNT }, (_, index) => {
   const y = 1 - (2 * (index + .5)) / DOT_COUNT;
@@ -25,7 +27,7 @@ const drawOrb = (
   context: CanvasRenderingContext2D,
   seconds: number,
 ) => {
-  const size = canvas.clientWidth || 68;
+  const size = canvas.clientWidth || 84;
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const pixelSize = Math.max(1, Math.round(size * dpr));
 
@@ -35,7 +37,7 @@ const drawOrb = (
   }
 
   const phase = (seconds % PERIOD_SECONDS) / PERIOD_SECONDS * Math.PI * 2;
-  const sphereRadius = size * .44;
+  const sphereRadius = size * ORB_RADIUS_RATIO;
   const center = size / 2;
   const yaw = Math.sin(phase) * .42;
   const pitch = Math.cos(phase) * .18;
@@ -65,7 +67,7 @@ const drawOrb = (
         x: center + x * sphereRadius * perspective,
         y: center + y * sphereRadius * perspective,
         z: pitchZ,
-        radius: .52 * size / 40,
+        radius: DOT_RADIUS,
         alpha: .56 + depth * .44,
       };
     })
