@@ -3483,8 +3483,44 @@ const updateCurrentBookEntry = () => {
   });
 };
 
-const matchesImportedBook = async (record: ImportedBookRecord) => {
-  const candidates = importedBooks.filter((book) => book.title === record.title);
+type ImportedBookMatch = {
+  duplicate: boolean;
+  replacement?: ImportedBookMetadata;
+};
+
+const comparableImportedText = (paragraphs: readonly string[]) => paragraphs
+  .join('')
+  .normalize('NFKC')
+  .replace(/[^\p{L}\p{N}]+/gu, '');
+
+const likelySameImportedContent = (
+  existing: Book,
+  incoming: ImportedBookRecord,
+) => {
+  const left = comparableImportedText(existing.paragraphs ?? []);
+  const right = comparableImportedText(incoming.paragraphs);
+  const [shorter, longer] = left.length <= right.length ? [left, right] : [right, left];
+
+  if (shorter === longer) {
+    return true;
+  }
+  if (shorter.length < 64 || shorter.length / longer.length < 0.35) {
+    return false;
+  }
+
+  const anchorLength = Math.min(128, shorter.length);
+
+  return longer.includes(shorter.slice(0, anchorLength))
+    && longer.includes(shorter.slice(-anchorLength));
+};
+
+const matchImportedBook = async (record: ImportedBookRecord): Promise<ImportedBookMatch> => {
+  const candidates = importedBooks.filter((book) => (
+    book.title === record.title
+    && book.author === record.author
+    && (!book.sourceFormat || book.sourceFormat === record.sourceFormat)
+  ));
+  const replacements: ImportedBookMetadata[] = [];
 
   for (const candidate of candidates) {
     try {
@@ -3501,13 +3537,19 @@ const matchesImportedBook = async (record: ImportedBookRecord) => {
         && existing.cover === record.cover
         && existing.sourceFormat === record.sourceFormat
       ) {
-        return true;
+        return { duplicate: true };
+      }
+      if (likelySameImportedContent(existing, record)) {
+        replacements.push(candidate);
       }
     } catch {
       // 损坏记录不应阻止用户重新导入一份可读副本。
     }
   }
-  return false;
+  return {
+    duplicate: false,
+    ...(replacements.length === 1 ? { replacement: replacements[0] } : {}),
+  };
 };
 
 const importFiles = async (files: File[]) => {
@@ -3522,6 +3564,7 @@ const importFiles = async (files: File[]) => {
   const importedIds = new Set<string>();
   const failures: string[] = [];
   let duplicateCount = 0;
+  let updatedCount = 0;
 
   importInProgress = true;
   window.clearTimeout(importProgressTimer);
@@ -3551,15 +3594,27 @@ const importFiles = async (files: File[]) => {
       });
 
       updateProgress(fileIndex, 0.7, '检查重复');
-      if (await matchesImportedBook(record)) {
+      const match = await matchImportedBook(record);
+      if (match.duplicate) {
         duplicateCount += 1;
         updateProgress(fileIndex, 1, `${fileIndex + 1} / ${files.length}`);
         continue;
       }
+      const savedRecord = match.replacement
+        ? {
+            ...record,
+            id: match.replacement.id,
+            createdAt: match.replacement.createdAt,
+          }
+        : record;
+
+      if (match.replacement) {
+        updatedCount += 1;
+      }
       updateProgress(fileIndex, 0.84, '放上书架');
-      await saveImportedBook(record);
-      loadedBookCache.delete(record.id);
-      loadedBookCache.set(record.id, record);
+      await saveImportedBook(savedRecord);
+      loadedBookCache.delete(savedRecord.id);
+      loadedBookCache.set(savedRecord.id, savedRecord);
       while (loadedBookCache.size > MAX_LOADED_BOOK_CACHE_ENTRIES) {
         const oldestId = loadedBookCache.keys().next().value as string | undefined;
 
@@ -3568,15 +3623,15 @@ const importFiles = async (files: File[]) => {
         }
         loadedBookCache.delete(oldestId);
       }
-      const metadata = toBookMetadata(record);
-      const existingIndex = importedBooks.findIndex((book) => book.id === record.id);
+      const metadata = toBookMetadata(savedRecord);
+      const existingIndex = importedBooks.findIndex((book) => book.id === savedRecord.id);
 
       if (existingIndex >= 0) {
         importedBooks[existingIndex] = metadata;
       } else {
         importedBooks.push(metadata);
       }
-      importedIds.add(record.id);
+      importedIds.add(savedRecord.id);
       updateProgress(fileIndex, 1, `${fileIndex + 1} / ${files.length}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : '无法导入这本书';
@@ -3611,6 +3666,8 @@ const importFiles = async (files: File[]) => {
     );
   } else if (importedCount && duplicateCount) {
     announceStatus(`已导入 ${importedCount} 本，跳过 ${duplicateCount} 本重复书籍`);
+  } else if (importedCount && updatedCount === importedCount) {
+    announceStatus(`已更新 ${updatedCount} 本书的封面与排版`);
   } else if (importedCount) {
     announceStatus(`已把 ${importedCount} 本书放入书库`);
   } else if (duplicateCount) {
