@@ -1,6 +1,6 @@
 {
-  "name": "yuguang-reader",
-  "productName": "余光",
+  "name": "yue-reader",
+  "productName": "阅",
   "version": "0.6.2",
   "description": "一款让书页与真实世界保持连接的沉浸式桌面阅读应用",
   "main": ".vite/build/main.js",

@@ -364,7 +364,7 @@ app.innerHTML = `
 
     <section
       class="landing-view view"
-      aria-label="余光开始页"
+      aria-label="阅开始页"
       data-ui-ink="${initialLandingScene.ink}"
     >
       <img
@@ -417,6 +417,9 @@ app.innerHTML = `
 
       <aside class="library-side-rail" aria-label="书架导航">
         <nav class="library-categories" aria-label="书籍分类">
+          <button class="library-home-bookmark" type="button" data-library-return-home>
+            返回首页
+          </button>
           <button data-library-category="all" aria-pressed="true">
             全部 0 本
           </button>
@@ -590,6 +593,9 @@ app.innerHTML = `
       </div>
       <div class="reader-scroll-fade reader-scroll-fade-top" aria-hidden="true"></div>
       <div class="reader-scroll-fade reader-scroll-fade-bottom" aria-hidden="true"></div>
+      <span class="reader-page-number" data-reader-page-number aria-label="页码">
+        1 / 1
+      </span>
 
       <aside
         class="reader-chrome reader-minimap"
@@ -782,6 +788,9 @@ const backgroundSceneButtons = [
 const libraryCategoryButtons = [
   ...libraryView.querySelectorAll<HTMLButtonElement>('[data-library-category]'),
 ];
+const libraryReturnHomeButton = queryRequired<HTMLButtonElement>(
+  '[data-library-return-home]',
+);
 const libraryEmpty = queryRequired<HTMLElement>('[data-library-empty]');
 const libraryEmptyTitle = queryRequired<HTMLElement>('[data-library-empty-title]');
 const libraryEmptyAction = queryRequired<HTMLButtonElement>('[data-library-empty-action]');
@@ -845,6 +854,7 @@ const readerMinimapLabel = queryRequired<HTMLElement>('[data-reader-minimap-labe
 const readerProgress = queryRequired<HTMLElement>('[data-reader-progress]');
 const progressSlider = queryRequired<HTMLInputElement>('[data-progress-slider]');
 const progressPercent = queryRequired<HTMLElement>('[data-progress-percent]');
+const readerPageNumber = queryRequired<HTMLElement>('[data-reader-page-number]');
 const progressBookmarks = queryRequired<HTMLElement>(
   '[data-reader-progress-bookmarks]',
 );
@@ -1944,6 +1954,24 @@ const renderProgressBookmarks = () => {
   progressBookmarks.replaceChildren(...markers);
 };
 
+const updateReaderPageNumber = () => {
+  const viewportHeight = Math.max(readerSurface.clientHeight, 1);
+  const totalPages = Math.max(
+    1,
+    Math.ceil(readerSurface.scrollHeight / viewportHeight),
+  );
+  const scrollRange = getScrollRange();
+  const currentPage = scrollRange > 0
+    ? 1 + Math.round(readerSurface.scrollTop / scrollRange * (totalPages - 1))
+    : 1;
+
+  readerPageNumber.textContent = `${currentPage} / ${totalPages}`;
+  readerPageNumber.setAttribute(
+    'aria-label',
+    `第 ${currentPage} 页，共 ${totalPages} 页`,
+  );
+};
+
 function updateReaderNavigation() {
   const scrollRange = getScrollRange();
   const ratio = scrollRange > 0
@@ -1969,6 +1997,7 @@ function updateReaderNavigation() {
       : `${Math.round(percent)}%`,
   );
   setSegmentedProgress(readerProgress, progressPercent, percent);
+  updateReaderPageNumber();
   updateMinimapBars(ratio);
   bookmarkButton.setAttribute('aria-pressed', String(typeof pinnedAnchor === 'number'));
   const bookmarkLabel = typeof pinnedAnchor !== 'number'
@@ -2464,6 +2493,7 @@ const getReaderExpansion = (bookWidth: number, bookHeight: number) => {
 const openBook = async (
   book: Book,
   trigger: HTMLButtonElement,
+  requestRevision: number,
   transitionAlreadyCentered = false,
 ): Promise<OpenBookResult> => {
   if (mode !== 'library') {
@@ -2472,10 +2502,27 @@ const openBook = async (
 
   activeBook = book;
   activeTrigger = trigger;
-  setMode('opening');
   announceStatus('正在载入正文…');
   const location = readingProgress[book.id] ?? { anchor: 0 };
-  const documentPromise = prepareReadingDocument(book, location);
+  const ready = await prepareReadingDocument(book, location);
+
+  if (
+    !ready
+    || requestRevision !== openRequestRevision
+    || mode !== 'library'
+    || activeBook.id !== book.id
+  ) {
+    transitionBook.classList.remove('is-visible');
+    if (requestRevision === openRequestRevision) {
+      announceStatus('暂时无法打开这本书');
+      return 'failed';
+    }
+    return 'cancelled';
+  }
+
+  loadingBookId = null;
+  await afterPaint();
+  setMode('opening');
   prepareTransitionBook(book);
   const frame = positionTransitionBook();
   const start = transitionAlreadyCentered
@@ -2572,11 +2619,11 @@ const openBook = async (
   );
   const readerAnimation = readerView.animate(
     reducedMotion.matches
-      ? [{ opacity: 0 }, { opacity: 1 }]
+      ? [{ opacity: 1 }, { opacity: 1 }]
       : [
-          { opacity: 0, transform: 'scale(.95)' },
+          { opacity: 1, transform: 'scale(.95)' },
           {
-            opacity: 0,
+            opacity: 1,
             transform: 'scale(.96)',
             offset: transitionAlreadyCentered ? 0.48 : 0.62,
           },
@@ -2587,13 +2634,14 @@ const openBook = async (
   const animations = [bookAnimation, coverAnimation, readerAnimation];
 
   activeAnimations = animations;
-  const [ready] = await Promise.all([
-    documentPromise,
-    waitForAnimations(animations, duration + 240),
-  ]);
+  await waitForAnimations(animations, duration + 240);
   activeAnimations = [];
 
-  if (!ready || shell.dataset.mode !== 'opening' || activeBook.id !== book.id) {
+  if (
+    requestRevision !== openRequestRevision
+    || shell.dataset.mode !== 'opening'
+    || activeBook.id !== book.id
+  ) {
     animations.forEach((animation) => animation.cancel());
     transitionBook.classList.remove('is-visible');
     if (shell.dataset.mode === 'opening') {
@@ -3225,10 +3273,9 @@ const openBookSummary = async (book: Book, trigger: HTMLButtonElement) => {
     if (requestRevision !== openRequestRevision || mode !== 'library') {
       return;
     }
-    loadingBookId = null;
     const returnTrigger = getPhysicalBookButton(book.id) ?? physicalTrigger;
 
-    await openBook(readableBook, returnTrigger, true);
+    await openBook(readableBook, returnTrigger, requestRevision, true);
   } catch (error) {
     await flightPromise.catch((): void => undefined);
     transitionBook.classList.remove('is-visible');
@@ -3397,10 +3444,11 @@ const matchImportedBook = async (record: ImportedBookRecord): Promise<ImportedBo
       // 损坏记录不应阻止用户重新导入一份可读副本。
     }
   }
-  return {
-    duplicate: false,
-    ...(replacements.length === 1 ? { replacement: replacements[0] } : {}),
-  };
+  const replacement = replacements.length === 1
+    ? replacements[0]
+    : sourceCandidates.length === 1 ? sourceCandidates[0] : undefined;
+
+  return { duplicate: false, ...(replacement ? { replacement } : {}) };
 };
 
 const importFiles = async (files: File[]) => {
@@ -3539,6 +3587,7 @@ importInput.addEventListener('change', () => {
 importChooseButton.addEventListener('click', () => importInput.click());
 
 enterLibraryButton.addEventListener('click', enterLibrary);
+libraryReturnHomeButton.addEventListener('click', () => void returnToLanding());
 backgroundSceneButtons.forEach((button) => {
   button.addEventListener('click', () => {
     const sceneIndex = Number(button.dataset.backgroundSceneIndex);

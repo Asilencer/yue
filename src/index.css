@@ -366,6 +366,7 @@ button {
   pointer-events: none;
 }
 
+.app-shell[data-mode="opening"] .reader-view,
 .app-shell[data-mode="reading"] .reader-view,
 .app-shell[data-mode="closing"] .reader-view {
   opacity: 1;
@@ -612,6 +613,26 @@ button {
   );
 }
 
+.reader-page-number {
+  position: absolute;
+  z-index: 4;
+  bottom: clamp(18px, 2.2vh, 26px);
+  left: 50%;
+  width: var(--reader-copy-width);
+  border: 0;
+  opacity: .58;
+  color: var(--reader-subtle);
+  background: transparent;
+  font-family: var(--reader-ui-font);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .08em;
+  line-height: 1;
+  text-align: center;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
 .page-copy {
   position: relative;
   min-width: 0;
@@ -656,20 +677,13 @@ button {
   text-indent: 2em;
   text-align: justify;
   text-justify: inter-character;
+  text-wrap: pretty;
+  orphans: 2;
+  widows: 2;
 }
 
 .page-body p + p {
-  margin-top: .34em;
-}
-
-.page-inner[data-source-format="epub"] .page-body p {
-  text-align: start;
-  text-indent: 0;
-  text-wrap: pretty;
-}
-
-.page-inner[data-source-format="epub"] .page-body p + p {
-  margin-top: .68em;
+  margin-top: .56em;
 }
 
 .page-body .markdown-heading {
@@ -2330,9 +2344,9 @@ button {
 }
 
 .library-import-entry > span {
-  display: grid;
-  justify-items: start;
-  gap: 4px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
 }
 
 .library-import-entry strong {
@@ -2896,7 +2910,9 @@ button {
   z-index: 8;
   top: 50%;
   left: clamp(18px, 2vw, 24px);
+  display: grid;
   width: 116px;
+  gap: 14px;
   color: #39413d;
   transform: translateY(-50%);
   -webkit-app-region: no-drag;
@@ -2940,11 +2956,16 @@ button {
     transform 220ms cubic-bezier(.2, .76, .2, 1);
 }
 
-.library-categories button:nth-child(2) {
+.library-categories .library-home-bookmark {
+  --note-image: url("./assets/library/pinned-note-clay.png");
+  margin-bottom: 8px;
+}
+
+.library-categories button[data-library-category="reading"] {
   --note-image: url("./assets/library/pinned-note-sage.png");
 }
 
-.library-categories button:nth-child(3) {
+.library-categories button[data-library-category="finished"] {
   --note-image: url("./assets/library/pinned-note-clay.png");
 }
 

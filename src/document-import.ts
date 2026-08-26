@@ -498,6 +498,37 @@ const ignoredBlockTags = new Set([
   'nav',
 ]);
 
+const eastAsianSpacingCharacters = [
+  '\\p{Script=Han}',
+  '\\p{Script=Hiragana}',
+  '\\p{Script=Katakana}',
+  '\\p{Script=Hangul}',
+  '\\u3000-\\u303f',
+  '\\uff01-\\uff60',
+].join('');
+const eastAsianSpacingPattern = new RegExp(
+  `([${eastAsianSpacingCharacters}])[\\t \\u00a0]+(?=[${eastAsianSpacingCharacters}])`,
+  'gu',
+);
+const numberedSectionHeadingPattern = /^第[一二三四五六七八九十百千\d]+[卷章节篇回]$/u;
+const chronicleSectionHeadingPattern = /^.+传第[一二三四五六七八九十百千\d]+$/u;
+const normalizeEastAsianSpacing = (value: string) => value.replace(
+  eastAsianSpacingPattern,
+  '$1',
+);
+
+const isProjectGutenbergBoilerplate = (element: Element) => {
+  const id = element.id.toLowerCase();
+  const classes = (element.getAttribute('class') ?? '').toLowerCase().split(/\s+/);
+
+  return classes.includes('pg-boilerplate')
+    || classes.includes('pgheader')
+    || id === 'pg-header'
+    || id === 'pg-footer'
+    || id === 'project-gutenberg-license'
+    || /^pg-(?:start|end)-separator$/.test(id);
+};
+
 const escapeTexText = (value: string) => value.replace(
   /[#$%&_{}]/g,
   (character) => `\\${character}`,
@@ -613,7 +644,7 @@ const mathMlToTex = (math: Element) => {
 
 const markdownInlineText = (node: Node): string => {
   if (node.nodeType === Node.TEXT_NODE) {
-    return escapeMarkdownText(node.textContent ?? '');
+    return escapeMarkdownText(normalizeEastAsianSpacing(node.textContent ?? ''));
   }
   if (!(node instanceof Element)) {
     return '';
@@ -660,6 +691,76 @@ const normalizeBlockText = (value: string) => value
   .replace(/[\t\f\v ]+/g, ' ')
   .replace(/ *\n */g, '\n')
   .trim();
+
+const splitNumberedEpubParagraph = (value: string) => {
+  const lines = value.split('\n').map((line) => line.trim()).filter(Boolean);
+  const isMarker = (line: string) => /^\d{1,4}[.．、]?$/.test(line);
+
+  if (!isMarker(lines[0] ?? '') || lines.filter(isMarker).length < 2) {
+    return [value];
+  }
+
+  const blocks: string[] = [];
+  let current: string[] = [];
+
+  lines.forEach((line) => {
+    if (isMarker(line) && current.length) {
+      blocks.push(current.join('\n'));
+      current = [];
+    }
+    current.push(line);
+  });
+  if (current.length) {
+    blocks.push(current.join('\n'));
+  }
+  return blocks;
+};
+
+const inferEpubParagraphHeading = (element: Element) => {
+  const text = normalizeEastAsianSpacing(cleanMetadata(element.textContent));
+  const length = Array.from(text).length;
+
+  if (!text || length > 56 || /[撰著译校注编]$/u.test(text)) {
+    return undefined;
+  }
+  if (/^《卷[^》]{1,24}》$/u.test(text)) {
+    return 2;
+  }
+  if (/^《[^》]{1,40}》$/u.test(text)) {
+    return 3;
+  }
+
+  const className = element.getAttribute('class') ?? '';
+  const semanticHeading = /(?:^|[\s_-])(?:chapter|heading|section|subhead|title)(?:[\s_-]|$)/i
+    .test(className);
+  const marginTop = Number.parseFloat(
+    element.getAttribute('style')?.match(/margin-top\s*:\s*([\d.]+)em/i)?.[1] ?? '0',
+  );
+  const sentenceEnding = /[。！？；：，、．.!?;:]$/u.test(text);
+
+  if (sentenceEnding) {
+    return undefined;
+  }
+  if (semanticHeading) {
+    return length <= 26 ? 3 : 2;
+  }
+  if (marginTop >= 5) {
+    return 2;
+  }
+  if (marginTop >= 3 && length <= 40) {
+    return 2;
+  }
+  if (marginTop >= 1.8 && length <= 24) {
+    return 3;
+  }
+  if (
+    numberedSectionHeadingPattern.test(text)
+    || chronicleSectionHeadingPattern.test(text)
+  ) {
+    return 2;
+  }
+  return undefined;
+};
 
 const escapeMarkdownText = (value: string) => Array.from(value, (character) => {
   const code = character.charCodeAt(0);
@@ -752,6 +853,10 @@ const htmlToMarkdown = (source: string) => {
   }
 
   const body = localNameElements(document, 'body')[0] ?? document.documentElement;
+  const projectGutenbergSource = localNameElements(document, 'meta').some((meta) => (
+    meta.getAttribute('name')?.toLowerCase() === 'generator'
+    && /project gutenberg|ebookmaker/i.test(meta.getAttribute('content') ?? '')
+  ));
   const blocks: string[] = [];
   const collect = (container: Element) => {
     Array.from(container.childNodes).forEach((node) => {
@@ -767,7 +872,10 @@ const htmlToMarkdown = (source: string) => {
       const element = node;
       const tag = element.localName.toLowerCase();
 
-      if (ignoredBlockTags.has(tag)) {
+      if (
+        ignoredBlockTags.has(tag)
+        || isProjectGutenbergBoilerplate(element)
+      ) {
         return;
       }
       if (tag === 'math') {
@@ -836,8 +944,28 @@ const htmlToMarkdown = (source: string) => {
       if (['p', 'figcaption', 'caption', 'dt', 'dd'].includes(tag)) {
         const text = normalizeBlockText(markdownInlineText(element));
 
-        if (text) {
-          blocks.push(text);
+        if (
+          !text
+          || (
+            projectGutenbergSource
+            && tag === 'p'
+            && /^Produced by\b/i.test(cleanMetadata(element.textContent))
+          )
+        ) {
+          return;
+        }
+
+        const paragraphs = tag === 'p'
+          ? splitNumberedEpubParagraph(text)
+          : [text];
+        const headingLevel = paragraphs.length === 1 && tag === 'p'
+          ? inferEpubParagraphHeading(element)
+          : undefined;
+
+        if (headingLevel) {
+          blocks.push(`${'#'.repeat(headingLevel)} ${paragraphs[0]}`);
+        } else {
+          blocks.push(...paragraphs);
         }
         return;
       }

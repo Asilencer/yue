@@ -7,9 +7,27 @@ import {
 import path from 'node:path';
 import type { ReaderCommand } from './global';
 
+const APP_NAME = '阅';
+const LEGACY_USER_DATA_DIRECTORY = '余光';
 const READER_COMMAND_CHANNEL = 'reader-command';
 
+// 保留旧数据目录，避免改名后丢失已导入书籍和阅读进度。
+app.setPath(
+  'userData',
+  path.join(app.getPath('appData'), LEGACY_USER_DATA_DIRECTORY),
+);
+app.setName(APP_NAME);
 app.enableSandbox();
+
+const installDevelopmentDockIcon = () => {
+  if (process.platform !== 'darwin' || !MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+    return;
+  }
+
+  app.dock?.setIcon(
+    path.join(app.getAppPath(), 'src/assets/brand/yue-app-icon.png'),
+  );
+};
 
 const sendReaderCommand = (command: ReaderCommand) => {
   const target = BrowserWindow.getFocusedWindow();
@@ -64,7 +82,7 @@ const createWindow = () => {
     minWidth: 1040,
     minHeight: 680,
     show: false,
-    title: '余光',
+    title: APP_NAME,
     backgroundColor: '#f4f1e9',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
     webPreferences: {
@@ -89,6 +107,7 @@ const createWindow = () => {
 };
 
 app.whenReady().then(() => {
+  installDevelopmentDockIcon();
   installApplicationMenu();
   createWindow();
 });

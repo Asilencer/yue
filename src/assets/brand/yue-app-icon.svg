@@ -1,0 +1,17 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  role="img"
+  aria-labelledby="yue-app-icon-title"
+  viewBox="0 0 1024 1024"
+>
+  <title id="yue-app-icon-title">阅应用图标</title>
+  <rect x="48" y="48" width="928" height="928" rx="220" fill="#f4f1ea" />
+  <image
+    href="yue-logo.svg"
+    x="112"
+    y="112"
+    width="800"
+    height="800"
+    preserveAspectRatio="xMidYMid meet"
+  />
+</svg>
