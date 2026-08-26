@@ -1,8 +1,6 @@
 export type ReaderCommand =
   | 'open-book'
-  | 'toggle-bookmark'
-  | 'show-contents'
-  | 'toggle-reader-controls';
+  | 'toggle-bookmark';
 
 export interface YuguangApi {
   onReaderCommand: (

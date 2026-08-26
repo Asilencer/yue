@@ -48,17 +48,6 @@ const installApplicationMenu = () => {
           accelerator: 'Command+D',
           click: () => sendReaderCommand('toggle-bookmark'),
         },
-        {
-          label: '显示目录',
-          accelerator: 'Command+T',
-          click: () => sendReaderCommand('show-contents'),
-        },
-        { type: 'separator' },
-        {
-          label: '显示或隐藏阅读控件',
-          accelerator: 'Command+Shift+C',
-          click: () => sendReaderCommand('toggle-reader-controls'),
-        },
       ],
     },
     { role: 'viewMenu' },

@@ -45,7 +45,7 @@ import { createThinkingOrb } from './thinking-orb';
 
 type AppMode = 'landing' | 'library' | 'opening' | 'reading' | 'closing';
 type Direction = 'forward' | 'backward';
-type ReaderPanel = 'contents' | 'appearance';
+type ReaderPanel = 'appearance';
 type LibraryPanel = 'search' | 'import' | 'background' | 'appearance';
 type LibraryCategory = 'all' | 'reading' | 'finished';
 type OpenBookResult = 'opened' | 'cancelled' | 'failed';
@@ -207,18 +207,6 @@ const reiconImageMountain = `
   <circle cx="7.3333" cy="5.3333" r="2.3333" />
 `;
 
-const reiconBookSaved = `
-  <path
-    d="M22 4.6699V16.74c0 .96-.78 1.86-1.74 1.98l-.33.04
-      c-2.18.29-5.54 1.4-7.46 2.46-.26.15-.69.15-.96 0l-.04-.02
-      c-1.92-1.05-5.27-2.15-7.44-2.44l-.29-.04C2.78 18.6 2 17.7 2 16.74V4.6599
-      c0-1.19.97-2.09 2.16-1.99 2.1.17 5.28 1.23 7.06 2.34l.25.15
-      c.29.18.77.18 1.06 0l.17-.11c.63-.39 1.43-.78 2.3-1.13V8l2-1.33L19 8V2.78
-      c.27-.05.53-.08.77-.1h.06c1.19-.1 2.17.79 2.17 1.99Z"
-  />
-  <path d="M12 5.49v15M19 2.78V8l-2-1.33L15 8V3.92c1.31-.52 2.77-.94 4-1.14Z" />
-`;
-
 const reiconReply2 = `
   <path d="m10 6.5-5.5 5.5 5.5 5.5" />
   <path d="M4.5 12h10.25c3.45 0 5.75-2.3 5.75-5.75" />
@@ -327,7 +315,6 @@ const reiconTickCircle = `
 const readerIconPaths = {
   minimapReturn: reiconReply2,
   minimapPin: reiconBookmark2,
-  contents: reiconBookSaved,
   libraryBackground: reiconImageMountain,
   libraryAppearance: reiconSetting4,
   appearanceFont: reiconFeather,
@@ -338,10 +325,6 @@ const readerIconPaths = {
   librarySearch: reiconSearchNormal2,
   trash: reiconTrash9,
   finished: reiconTickCircle,
-  sound: `
-    <path d="M4 10v4h3l4 3V7l-4 3H4Z" />
-    <path d="M15 9.5c1.1 1.33 1.1 3.67 0 5M18 7c2.65 2.75 2.65 7.25 0 10" />
-  `,
   appearanceBackground: `
     <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
     <circle cx="16.25" cy="8.25" r="1.5" />
@@ -590,7 +573,6 @@ app.innerHTML = `
       aria-hidden="true"
       tabindex="-1"
       inert
-      data-controls="quiet"
     >
       <img
         class="reader-scene"
@@ -659,27 +641,12 @@ app.innerHTML = `
             >${renderReaderIcon('minimapReturn')}</button>
             <button
               class="reader-minimap-action"
-              data-reader-action="contents"
-              type="button"
-              aria-label="显示目录"
-              title="显示目录"
-            >${renderReaderIcon('contents')}</button>
-            <button
-              class="reader-minimap-action"
               data-reader-action="bookmark"
               type="button"
               aria-label="固定当前阅读位置"
               aria-pressed="false"
               title="固定当前阅读位置"
             >${renderReaderIcon('minimapPin')}</button>
-            <button
-              class="reader-minimap-action"
-              data-reader-action="sound"
-              type="button"
-              aria-label="关闭开书声音"
-              aria-pressed="true"
-              title="关闭开书声音"
-            >${renderReaderIcon('sound')}</button>
           </nav>
           <span class="visually-hidden" data-reader-title></span>
         </div>
@@ -693,14 +660,6 @@ app.innerHTML = `
         aria-hidden="true"
         inert
       >
-        <div
-          class="reader-hub-view"
-          data-panel-view="contents"
-        >
-          <nav class="reader-contents-nav" aria-label="书籍目录">
-            <div class="reader-panel-list" data-contents-list></div>
-          </nav>
-        </div>
         <div
           class="reader-hub-view"
           data-panel-view="appearance"
@@ -805,10 +764,7 @@ app.innerHTML = `
       </div>
     </div>
 
-    <div class="app-status" data-app-status data-tone="neutral" hidden>
-      <p data-app-status-message role="status" aria-live="polite"></p>
-      <button type="button" data-app-status-dismiss aria-label="关闭提示">×</button>
-    </div>
+    <p class="visually-hidden" data-app-status role="status" aria-live="polite"></p>
   </main>
 `;
 
@@ -839,8 +795,6 @@ const bookCopy = queryRequired<HTMLElement>('.book-copy');
 const readingDocumentElement = queryRequired<HTMLElement>('[data-reading-document]');
 const readerStatus = queryRequired<HTMLElement>('[data-reader-status]');
 const appStatus = queryRequired<HTMLElement>('[data-app-status]');
-const appStatusMessage = queryRequired<HTMLElement>('[data-app-status-message]');
-const appStatusDismiss = queryRequired<HTMLButtonElement>('[data-app-status-dismiss]');
 const importInput = queryRequired<HTMLInputElement>('[data-import-input]');
 const libraryDock = queryRequired<HTMLElement>('.library-dock');
 const libraryPanel = queryRequired<HTMLElement>('[data-library-panel]');
@@ -898,15 +852,7 @@ const returnButton = queryRequired<HTMLButtonElement>('[data-reader-return]');
 const bookmarkButton = queryRequired<HTMLButtonElement>(
   '[data-reader-action="bookmark"]',
 );
-const contentsButton = queryRequired<HTMLButtonElement>(
-  '[data-reader-action="contents"]',
-);
-const soundButton = queryRequired<HTMLButtonElement>(
-  '[data-reader-action="sound"]',
-);
-const contentsList = queryRequired<HTMLElement>('[data-contents-list]');
 const readerPanel = queryRequired<HTMLElement>('[data-reader-panel]');
-const readerControlSurfaces = [readerMinimap, readerPanel];
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 const APPEARANCE_KEY = 'readerAppearance:v4';
@@ -935,13 +881,12 @@ let mode: AppMode = 'landing';
 let activeBook = books[0];
 let activeTrigger: HTMLButtonElement | null = null;
 let activePageSound: HTMLAudioElement | null = null;
-let pageSoundEnabled = localStorage.getItem(PAGE_SOUND_KEY) !== 'false';
+const pageSoundEnabled = localStorage.getItem(PAGE_SOUND_KEY) !== 'false';
 let paperAudioWarningShown = false;
 const lastPageSoundIndex: Record<Direction, number> = {
   forward: -1,
   backward: -1,
 };
-let controlsTimer: number | undefined;
 let activeAnimations: Animation[] = [];
 let importedBooks: ImportedBookMetadata[] = [];
 let openRequestRevision = 0;
@@ -950,7 +895,6 @@ let readingDocumentPreparing = false;
 let appearanceInputTimer: number | undefined;
 let scrollProgressFrame: number | undefined;
 let scrollProgressSaveTimer: number | undefined;
-let appStatusTimer: number | undefined;
 let minimapMotionFrame: number | undefined;
 let progressScrubbing = false;
 let activePanel: ReaderPanel | null = null;
@@ -1993,10 +1937,7 @@ const renderProgressBookmarks = () => {
     marker.disabled = readingDocumentPreparing;
     marker.style.setProperty('--bookmark-position', `${position.toFixed(3)}%`);
     marker.setAttribute('aria-label', `跳到 Pin，约 ${Math.round(position)}%`);
-    marker.addEventListener('click', () => {
-      scrollToAnchor(anchor);
-      setReaderControls(true);
-    });
+    marker.addEventListener('click', () => scrollToAnchor(anchor));
     return marker;
   }) : [];
 
@@ -2038,39 +1979,6 @@ function updateReaderNavigation() {
   bookmarkButton.title = bookmarkLabel;
 }
 
-const scheduleReaderControlsHide = () => {
-  window.clearTimeout(controlsTimer);
-  if (
-    mode !== 'reading'
-    || readerControlSurfaces.some((surface) => (
-      surface.matches(':hover') || surface.contains(document.activeElement)
-    ))
-  ) {
-    return;
-  }
-
-  controlsTimer = window.setTimeout(() => {
-    readerView.dataset.controls = 'quiet';
-  }, 1_800);
-};
-
-const setReaderControls = (visible: boolean) => {
-  window.clearTimeout(controlsTimer);
-  if (
-    !visible
-    && document.activeElement instanceof Node
-    && readerControlSurfaces.some((surface) => (
-      surface.contains(document.activeElement)
-    ))
-  ) {
-    readerView.focus({ preventScroll: true });
-  }
-  readerView.dataset.controls = visible ? 'visible' : 'quiet';
-  if (visible) {
-    scheduleReaderControlsHide();
-  }
-};
-
 const getBookChapters = (book: Book) => (
   book.imported
     ? book.chapters ?? []
@@ -2098,39 +2006,6 @@ const getChapterEntries = (book: Book) => {
   });
 };
 
-const renderReaderContents = () => {
-  const chapters = getChapterEntries(activeBook);
-
-  if (!chapters.length) {
-    const empty = document.createElement('p');
-
-    empty.className = 'reader-panel-empty';
-    empty.textContent = '这本书没有可识别的章节目录';
-    contentsList.replaceChildren(empty);
-    return;
-  }
-
-  contentsList.replaceChildren(...chapters.map((chapter) => {
-    const button = document.createElement('button');
-    const title = document.createElement('strong');
-    const position = document.createElement('span');
-
-    button.type = 'button';
-    button.className = 'reader-panel-item';
-    button.dataset.level = String(chapter.level);
-    title.textContent = chapter.title;
-    position.textContent = `${Math.round(getAnchorProgressRatio(chapter.anchor) * 100)}%`;
-    button.append(title, position);
-    button.addEventListener('click', () => {
-      scrollToAnchor(chapter.anchor);
-      setReaderPanel(null, { restoreFocus: false });
-      readerSurface.focus({ preventScroll: true });
-      setReaderControls(true);
-    });
-    return button;
-  }));
-};
-
 const setReaderPanel = (
   panel: ReaderPanel | null,
   options: { invoker?: HTMLElement; restoreFocus?: boolean } = {},
@@ -2154,25 +2029,16 @@ const setReaderPanel = (
   if (!panel) {
     delete readerPanel.dataset.panel;
     panelInvoker = null;
-    scheduleReaderControlsHide();
     return;
   }
 
-  setReaderControls(true);
   readerPanel.dataset.panel = panel;
-  readerPanel.setAttribute('aria-label', panel === 'contents' ? '书籍目录' : '阅读显示');
-  if (panel === 'contents') {
-    renderReaderContents();
-    requestAnimationFrame(() => {
-      contentsList.querySelector<HTMLElement>('button')?.focus();
-    });
-  } else {
-    readerAppearanceMount.append(settingsOptions);
-    resetAppearanceFormState();
-    requestAnimationFrame(() => {
-      fontFamilyInput.focus();
-    });
-  }
+  readerPanel.setAttribute('aria-label', '阅读显示');
+  readerAppearanceMount.append(settingsOptions);
+  resetAppearanceFormState();
+  requestAnimationFrame(() => {
+    fontFamilyInput.focus();
+  });
 };
 
 const toggleBookmark = () => {
@@ -2257,28 +2123,12 @@ const prepareReadingDocument = async (
   }
 };
 
-const announceStatus = (
-  message: string,
-  options: { tone?: 'neutral' | 'error'; persistent?: boolean } = {},
-) => {
-  window.clearTimeout(appStatusTimer);
-  appStatusMessage.textContent = '';
-  appStatus.hidden = false;
-  appStatus.dataset.tone = options.tone ?? 'neutral';
+const announceStatus = (message: string) => {
+  appStatus.textContent = '';
   requestAnimationFrame(() => {
-    appStatusMessage.textContent = message;
+    appStatus.textContent = message;
   });
-  if (!options.persistent) {
-    appStatusTimer = window.setTimeout(() => {
-      appStatus.hidden = true;
-    }, 4_500);
-  }
 };
-
-appStatusDismiss.addEventListener('click', () => {
-  window.clearTimeout(appStatusTimer);
-  appStatus.hidden = true;
-});
 
 const PAGE_TURN_VOLUME = 0.18;
 
@@ -2301,24 +2151,6 @@ const pageTurnAudio: Record<Direction, HTMLAudioElement[]> = {
   ],
 };
 const allPageTurnAudio = Object.values(pageTurnAudio).flat();
-
-const updatePageSoundButton = () => {
-  const label = pageSoundEnabled ? '关闭开书声音' : '打开开书声音';
-
-  soundButton.setAttribute('aria-pressed', String(pageSoundEnabled));
-  soundButton.setAttribute('aria-label', label);
-  soundButton.title = label;
-};
-
-const togglePageSound = () => {
-  pageSoundEnabled = !pageSoundEnabled;
-  localStorage.setItem(PAGE_SOUND_KEY, String(pageSoundEnabled));
-  if (!pageSoundEnabled && activePageSound && !activePageSound.paused) {
-    fadeOutPageTurnAudio(activePageSound);
-  }
-  updatePageSoundButton();
-  announceStatus(pageSoundEnabled ? '已打开开书声音' : '已关闭开书声音');
-};
 
 const resetPageTurnAudio = (audio: HTMLAudioElement) => {
   audio.pause();
@@ -2766,7 +2598,7 @@ const openBook = async (
     transitionBook.classList.remove('is-visible');
     if (shell.dataset.mode === 'opening') {
       setMode('library');
-      announceStatus('暂时无法打开这本书', { tone: 'error', persistent: true });
+      announceStatus('暂时无法打开这本书');
     }
     return shell.dataset.mode === 'library' ? 'failed' : 'cancelled';
   }
@@ -2783,7 +2615,6 @@ const openBook = async (
   lastOpenedBookId = book.id;
   localStorage.setItem(LAST_BOOK_KEY, book.id);
   updateCurrentBookEntry();
-  setReaderControls(true);
   readerSurface.focus({ preventScroll: true });
 
   return 'opened';
@@ -2861,7 +2692,6 @@ const closeBook = async () => {
   readingDocumentPreparing = false;
   bookCopy.removeAttribute('aria-busy');
   setReaderPanel(null, { restoreFocus: false });
-  setReaderControls(false);
   saveCurrentProgress();
   setLibraryPhase('browsing');
   setMode('closing');
@@ -3408,7 +3238,7 @@ const openBookSummary = async (book: Book, trigger: HTMLButtonElement) => {
     }
     const message = error instanceof Error ? error.message : '暂时无法打开这本书';
 
-    announceStatus(message, { tone: 'error', persistent: true });
+    announceStatus(message);
   } finally {
     if (requestRevision === openRequestRevision) {
       loadingBookId = null;
@@ -3458,10 +3288,7 @@ const commitPendingRemovals = async () => {
         importedBooks.push(book);
       }
     });
-    announceStatus('有书籍未能移出，已放回书架', {
-      tone: 'error',
-      persistent: true,
-    });
+    announceStatus('有书籍未能移出，已放回书架');
   }
   renderLibrarySearch();
   updateCurrentBookEntry();
@@ -3691,7 +3518,6 @@ const importFiles = async (files: File[]) => {
   if (failures.length) {
     announceStatus(
       `导入 ${importedCount} 本，${failures.length} 本失败。${failures[0]}`,
-      { tone: 'error', persistent: true },
     );
   } else if (importedCount && duplicateCount) {
     announceStatus(`已导入 ${importedCount} 本，跳过 ${duplicateCount} 本重复书籍`);
@@ -3806,13 +3632,6 @@ returnButton.addEventListener('click', () => {
   void closeBook();
 });
 bookmarkButton.addEventListener('click', toggleBookmark);
-contentsButton.addEventListener('click', () => {
-  setReaderPanel(
-    activePanel === 'contents' ? null : 'contents',
-    { invoker: contentsButton },
-  );
-});
-soundButton.addEventListener('click', togglePageSound);
 readerProgress.addEventListener('pointermove', (event) => {
   window.cancelAnimationFrame(minimapMotionFrame ?? 0);
   const pointerY = event.clientY;
@@ -3896,7 +3715,6 @@ progressSlider.addEventListener('input', () => {
 
   setSegmentedProgress(readerProgress, progressPercent, percent);
   updateMinimapBars(percent / 100);
-  setReaderControls(true);
 });
 progressSlider.addEventListener('change', finishProgressScrub);
 progressSlider.addEventListener('pointerup', finishProgressScrub);
@@ -3916,19 +3734,6 @@ readerSurface.addEventListener('scroll', () => {
     }, 180);
   });
 }, { passive: true });
-readerControlSurfaces.forEach((surface) => {
-  surface.addEventListener('pointerenter', () => window.clearTimeout(controlsTimer));
-  surface.addEventListener('pointerleave', scheduleReaderControlsHide);
-  surface.addEventListener('focusin', () => window.clearTimeout(controlsTimer));
-  surface.addEventListener('focusout', () => requestAnimationFrame(() => {
-    if (!surface.contains(document.activeElement)) {
-      scheduleReaderControlsHide();
-    }
-  }));
-});
-readerView.addEventListener('pointermove', () => setReaderControls(true), {
-  passive: true,
-});
 
 const changeFontSize = (step: number) => {
   const nextSize = Math.max(
@@ -4056,18 +3861,6 @@ const handleReaderCommand = (command: ReaderCommand) => {
 
   if (command === 'toggle-bookmark') {
     toggleBookmark();
-  } else if (command === 'show-contents') {
-    setReaderPanel(
-      activePanel === 'contents' ? null : 'contents',
-      { invoker: readerSurface },
-    );
-  } else if (command === 'toggle-reader-controls') {
-    const show = readerView.dataset.controls === 'quiet';
-
-    setReaderControls(show);
-    if (show) {
-      progressSlider.focus({ preventScroll: true });
-    }
   }
 };
 
@@ -4148,10 +3941,6 @@ window.addEventListener('keydown', (event) => {
     return;
   }
 
-  if (event.key === 'Tab' && mode === 'reading') {
-    setReaderControls(true);
-  }
-
   if (event.key === 'Escape' && activeLibraryPanel && !importInProgress) {
     event.preventDefault();
     setLibraryPanel(null);
@@ -4173,16 +3962,6 @@ window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && activePanel) {
     event.preventDefault();
     setReaderPanel(null);
-    return;
-  }
-
-  if (
-    event.key === 'Escape'
-    && mode === 'reading'
-    && readerView.dataset.controls === 'visible'
-  ) {
-    event.preventDefault();
-    setReaderControls(false);
     return;
   }
 
@@ -4219,7 +3998,6 @@ window.addEventListener('resize', handleLayoutGeometryChange);
 appearance = readAppearance();
 readingProgress = readProgress();
 readerPins = readPins();
-updatePageSoundButton();
 applyAppearance(appearance, false);
 setReaderPanel(null, { restoreFocus: false });
 setLibraryPanel(null, { restoreFocus: false });
@@ -4237,7 +4015,4 @@ void loadImportedBookMetadata()
     renderLibrarySearch();
     updateCurrentBookEntry();
   })
-  .catch(() => announceStatus('本地书库暂时无法读取', {
-    tone: 'error',
-    persistent: true,
-  }));
+  .catch(() => announceStatus('本地书库暂时无法读取'));
