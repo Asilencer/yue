@@ -82,7 +82,7 @@ const createWindow = () => {
     minWidth: 1040,
     minHeight: 680,
     show: false,
-    title: APP_NAME,
+    title: '',
     backgroundColor: '#f4f1e9',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
     webPreferences: {
@@ -93,6 +93,8 @@ const createWindow = () => {
     },
   });
 
+  // macOS 全屏会在顶部悬停时展开原生标题栏，保持其无标题。
+  mainWindow.on('page-title-updated', (event) => event.preventDefault());
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.on('will-navigate', (event) => event.preventDefault());
