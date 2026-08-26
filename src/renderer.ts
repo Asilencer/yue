@@ -33,6 +33,7 @@ import landingImage from './assets/scenes/landing-mountain-morning-v2.png';
 import type { ReaderCommand } from './global';
 import {
   deleteImportedBook,
+  exportLegacyImportedBooks,
   loadImportedBook,
   loadImportedBookMetadata,
   parseImportedBook,
@@ -4124,24 +4125,70 @@ const readerResizeObserver = new ResizeObserver(handleLayoutGeometryChange);
 readerResizeObserver.observe(readerSurface);
 window.addEventListener('resize', handleLayoutGeometryChange);
 
-appearance = readAppearance();
-readingProgress = readProgress();
-readerPins = readPins();
-applyAppearance(appearance, false);
-setReaderPanel(null, { restoreFocus: false });
-setLibraryPanel(null, { restoreFocus: false });
-setMode('landing');
-stopThinkingOrb = createThinkingOrb(thinkingOrbCanvas, reducedMotion);
-renderLibrarySearch();
-updateCurrentBookEntry();
-void loadImportedBookMetadata()
-  .then((storedBooks) => {
-    importedBooks = storedBooks;
-    if (lastOpenedBookId && !getBookSummaryById(lastOpenedBookId)) {
-      lastOpenedBookId = '';
-      localStorage.removeItem(LAST_BOOK_KEY);
+const startApplication = () => {
+  appearance = readAppearance();
+  readingProgress = readProgress();
+  readerPins = readPins();
+  applyAppearance(appearance, false);
+  setReaderPanel(null, { restoreFocus: false });
+  setLibraryPanel(null, { restoreFocus: false });
+  setMode('landing');
+  stopThinkingOrb = createThinkingOrb(thinkingOrbCanvas, reducedMotion);
+  renderLibrarySearch();
+  updateCurrentBookEntry();
+  void loadImportedBookMetadata()
+    .then((storedBooks) => {
+      importedBooks = storedBooks;
+      if (lastOpenedBookId && !getBookSummaryById(lastOpenedBookId)) {
+        lastOpenedBookId = '';
+        localStorage.removeItem(LAST_BOOK_KEY);
+      }
+      renderLibrarySearch();
+      updateCurrentBookEntry();
+    })
+    .catch(() => announceStatus('本地书库暂时无法读取'));
+};
+
+const readStoredSettings = () => {
+  const settings: Record<string, string> = {};
+
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+
+    if (key !== null) {
+      settings[key] = localStorage.getItem(key) ?? '';
     }
-    renderLibrarySearch();
-    updateCurrentBookEntry();
-  })
-  .catch(() => announceStatus('本地书库暂时无法读取'));
+  }
+  return settings;
+};
+
+const runDataMigration = async () => {
+  if (window.yue.dataMigrationMode === 'export') {
+    await window.yue.saveDataMigration({
+      localStorage: readStoredSettings(),
+      books: await exportLegacyImportedBooks(),
+    });
+    return;
+  }
+
+  const payload = await window.yue.readDataMigration();
+
+  localStorage.clear();
+  Object.entries(payload.localStorage).forEach(([key, value]) => {
+    localStorage.setItem(key, value);
+  });
+  for (const book of payload.books) {
+    await saveImportedBook(book, true);
+  }
+  await window.yue.completeDataMigration();
+};
+
+if (window.yue.dataMigrationMode === 'none') {
+  startApplication();
+} else {
+  void runDataMigration().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : '无法迁移旧数据';
+
+    void window.yue.failDataMigration(message);
+  });
+}

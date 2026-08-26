@@ -106,6 +106,7 @@ export type ParseImportedBookOptions = {
 export type ImportedSourceFormat = 'epub';
 
 const DATABASE_NAME = 'yue-library';
+const LEGACY_DATABASE_NAME = 'yuguang-library';
 const DATABASE_VERSION = 3;
 const METADATA_STORE_NAME = 'books';
 const CONTENT_STORE_NAME = 'bookContents';
@@ -573,8 +574,8 @@ const normalizeStoredEpub = (value: unknown) => {
     : undefined;
 };
 
-const openDatabase = () => new Promise<IDBDatabase>((resolve, reject) => {
-  const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+const openDatabase = (name = DATABASE_NAME) => new Promise<IDBDatabase>((resolve, reject) => {
+  const request = indexedDB.open(name, DATABASE_VERSION);
   let blocked = false;
 
   request.onblocked = () => {
@@ -1132,8 +1133,10 @@ const sortMetadata = (books: ImportedBookMetadata[]) => books.sort(
   (left, right) => left.createdAt - right.createdAt,
 );
 
-export const loadImportedBookMetadata = async (): Promise<ImportedBookMetadata[]> => {
-  const database = await openDatabase();
+const loadImportedBookMetadataFromDatabase = async (
+  databaseName: string,
+): Promise<ImportedBookMetadata[]> => {
+  const database = await openDatabase(databaseName);
 
   try {
     const transaction = database.transaction(
@@ -1161,12 +1164,19 @@ export const loadImportedBookMetadata = async (): Promise<ImportedBookMetadata[]
   }
 };
 
-export const loadImportedBook = async (id: string): Promise<ImportedBookRecord> => {
+export const loadImportedBookMetadata = () => (
+  loadImportedBookMetadataFromDatabase(DATABASE_NAME)
+);
+
+const loadImportedBookFromDatabase = async (
+  databaseName: string,
+  id: string,
+): Promise<ImportedBookRecord> => {
   if (!id) {
     throw new Error('书籍 ID 不能为空');
   }
 
-  const database = await openDatabase();
+  const database = await openDatabase(databaseName);
 
   try {
     const transaction = database.transaction(
@@ -1204,6 +1214,23 @@ export const loadImportedBook = async (id: string): Promise<ImportedBookRecord> 
   } finally {
     database.close();
   }
+};
+
+export const loadImportedBook = (id: string) => (
+  loadImportedBookFromDatabase(DATABASE_NAME, id)
+);
+
+export const exportLegacyImportedBooks = async (): Promise<ImportedBookRecord[]> => {
+  const databases = await indexedDB.databases();
+
+  if (!databases.some((database) => database.name === LEGACY_DATABASE_NAME)) {
+    return [];
+  }
+  const metadata = await loadImportedBookMetadataFromDatabase(LEGACY_DATABASE_NAME);
+
+  return Promise.all(metadata.map((book) => (
+    loadImportedBookFromDatabase(LEGACY_DATABASE_NAME, book.id)
+  )));
 };
 
 export const saveImportedBook = async (
