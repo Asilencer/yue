@@ -190,6 +190,7 @@ const landingScenes = [
     ink: 'dark',
   },
 ] as const;
+type LandingScene = (typeof landingScenes)[number];
 const storedLandingScene = localStorage.getItem(LANDING_SCENE_KEY);
 const initialLandingSceneIndex = Math.max(
   0,
@@ -1052,6 +1053,28 @@ const waitForAnimations = async (
   window.clearTimeout(timeout);
 };
 
+const updateScenePicture = (
+  image: HTMLImageElement,
+  scene: LandingScene,
+  alt: string,
+) => {
+  const picture = image.parentElement as HTMLPictureElement;
+  const portraitSource = queryRequired<HTMLSourceElement>(
+    '[data-scene-source="portrait"]',
+    picture,
+  );
+  const landscapeSource = queryRequired<HTMLSourceElement>(
+    '[data-scene-source="landscape"]',
+    picture,
+  );
+
+  portraitSource.srcset = scene.portraitSrcSet;
+  landscapeSource.srcset = scene.landscapeSrcSet;
+  image.src = scene.src;
+  image.style.objectPosition = scene.position;
+  image.alt = alt;
+};
+
 const setLandingScene = (nextIndex: number) => {
   const scene = landingScenes[nextIndex];
 
@@ -1074,16 +1097,19 @@ const setLandingScene = (nextIndex: number) => {
       }
 
       landingSceneIndex = nextIndex;
-      landingSceneImage.src = scene.src;
-      landingSceneImage.style.objectPosition = scene.position;
-      landingSceneImage.alt = `首页背景：${scene.label}`;
+      updateScenePicture(
+        landingSceneImage,
+        scene,
+        `首页背景：${scene.label}`,
+      );
       landingView.dataset.uiInk = scene.ink;
-      librarySceneImage.src = scene.src;
-      librarySceneImage.style.objectPosition = scene.position;
-      librarySceneImage.alt = `书架背景：${scene.label}`;
+      updateScenePicture(
+        librarySceneImage,
+        scene,
+        `书架背景：${scene.label}`,
+      );
       libraryView.dataset.uiInk = scene.ink;
-      readerSceneImage.src = scene.src;
-      readerSceneImage.style.objectPosition = scene.position;
+      updateScenePicture(readerSceneImage, scene, '');
       backgroundSceneButtons.forEach((button) => {
         button.setAttribute(
           'aria-pressed',
@@ -1094,6 +1120,10 @@ const setLandingScene = (nextIndex: number) => {
       requestAnimationFrame(() => landingSceneImage.classList.remove('is-changing'));
     }, 140);
   }, { once: true });
+  preload.srcset = window.matchMedia('(orientation: portrait)').matches
+    ? scene.portraitSrcSet
+    : scene.landscapeSrcSet;
+  preload.sizes = '100vw';
   preload.src = scene.src;
 };
 

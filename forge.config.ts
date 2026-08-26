@@ -7,7 +7,12 @@ import { FuseV1Options, FuseVersion } from '@electron/fuses';
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    appBundleId: 'io.github.asilencer.yue',
     icon: 'src/assets/brand/yue-app-icon.icns',
+    osxSign: {
+      identity: '-',
+      identityValidation: false,
+    },
   },
   rebuildConfig: {},
   makers: [new MakerZIP({}, ['darwin'])],

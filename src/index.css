@@ -104,6 +104,14 @@ button {
   overflow: hidden;
 }
 
+.scene-picture {
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+  pointer-events: none;
+}
+
 .landing-view {
   --reader-glass-ink: rgba(247, 250, 249, .92);
   --settings-ink: #253034;
