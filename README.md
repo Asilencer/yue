@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="src/assets/brand/yue-app-icon.svg" width="112" alt="阅应用图标">
+  <img src="src/assets/brand/yue-logo.svg" width="112" alt="阅品牌字形">
 </p>
 
 <h1 align="center">阅</h1>
@@ -7,9 +7,9 @@
 <p align="center">从书页，看向生活。</p>
 
 <p align="center">
-  <a href="https://github.com/Asilencer/yuguang-reader/releases/latest">
+  <a href="https://github.com/Asilencer/yue/releases/latest">
     <img
-      src="https://img.shields.io/github/v/release/Asilencer/yuguang-reader?display_name=tag&style=flat-square&color=697a66"
+      src="https://img.shields.io/github/v/release/Asilencer/yue?display_name=tag&style=flat-square&color=697a66"
       alt="最新版本">
   </a>
   <img
@@ -26,7 +26,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Asilencer/yuguang-reader/releases/latest"><strong>下载最新版本</strong></a>
+  <a href="https://github.com/Asilencer/yue/releases/latest"><strong>下载最新版本</strong></a>
   ·
   <a href="https://asilencer.github.io/works.html#yue">查看作品介绍</a>
 </p>
@@ -46,10 +46,6 @@
 - **书和进度留在本机**：无需账号，也没有云端同步；
   导入内容与阅读数据只保存在当前 Mac。
 
-| 书架 | 沉浸阅读 |
-| --- | --- |
-| ![阅的书架](docs/images/library.png) | ![阅的全屏阅读界面](docs/images/reader.png) |
-
 ## 已有能力
 
 - 文件选择与拖放导入未加密、可重排 EPUB
@@ -65,7 +61,7 @@
 
 当前发布包面向 **Apple Silicon（arm64）Mac**。
 
-1. 前往 [Releases](https://github.com/Asilencer/yuguang-reader/releases/latest) 下载最新 ZIP。
+1. 前往 [Releases](https://github.com/Asilencer/yue/releases/latest) 下载最新 ZIP。
 2. 解压后，将 `阅.app` 拖入“应用程序”。
 3. 首次启动时右键点击应用并选择“打开”。当前公开构建尚未经过 Apple 公证，
    macOS 可能会显示来源提示。
