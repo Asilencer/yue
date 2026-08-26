@@ -65,6 +65,7 @@ const ignoredBlockTags = new Set([
   'form',
   'nav',
 ]);
+const genericImageAltPattern = /^(?:图|图片|图像|插图|照片|封面|image|img|picture|photo)$/iu;
 
 const blockContainerTags = new Set([
   'p',
@@ -406,7 +407,9 @@ const markdownInlineText = (
     return '<br>';
   }
   if (tag === 'img') {
-    return escapeEpubMarkdownText(node.getAttribute('alt') ?? '');
+    const alt = cleanText(node.getAttribute('alt'));
+
+    return genericImageAltPattern.test(alt) ? '' : escapeEpubMarkdownText(alt);
   }
   if (tag === 'code' && node.parentElement?.localName.toLowerCase() !== 'pre') {
     return markdownCodeSpan(node.textContent ?? '');

@@ -672,7 +672,7 @@ const conciseBookTitle = (value: string) => {
   if (Array.from(value).length <= 48) {
     return value;
   }
-  const subtitleIndex = value.search(/[（(]/u);
+  const subtitleIndex = value.search(/[（(【]|\[/u);
 
   return subtitleIndex >= 4 ? value.slice(0, subtitleIndex).trim() : value;
 };
@@ -1096,7 +1096,7 @@ export const parseImportedBook = async (
     ),
     48,
   );
-  const parsedContent = parseMarkdownContent(markdownTree, title);
+  const parsedContent = parseMarkdownContent(markdownTree, markdownTitle ?? title);
   const { paragraphs, chapters, formats } = parsedContent;
   options.onProgress?.(0.84);
 
