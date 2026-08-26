@@ -14,9 +14,21 @@ import notesCoverTemplate from './assets/covers/backgrounds/notes.jpg';
 import plantsCoverTemplate from './assets/covers/backgrounds/plants.jpg';
 import routeCoverTemplate from './assets/covers/backgrounds/route.jpg';
 import springCoverTemplate from './assets/covers/backgrounds/spring.jpg';
+import landingCityDuskLandscapeHigh from './assets/scenes/landing-city-dusk-v2-landscape-high.jpg';
+import landingCityDuskPortraitHigh from './assets/scenes/landing-city-dusk-v2-portrait-high.jpg';
+import landingCityDuskPortrait from './assets/scenes/landing-city-dusk-v2-portrait.jpg';
 import landingCityDusk from './assets/scenes/landing-city-dusk-v2.png';
+import landingCityMorningLandscapeHigh from './assets/scenes/landing-city-morning-v2-landscape-high.jpg';
+import landingCityMorningPortraitHigh from './assets/scenes/landing-city-morning-v2-portrait-high.jpg';
+import landingCityMorningPortrait from './assets/scenes/landing-city-morning-v2-portrait.jpg';
 import landingCityMorning from './assets/scenes/landing-city-morning-v2.png';
+import landingCoastAfternoonLandscapeHigh from './assets/scenes/landing-coast-afternoon-v2-landscape-high.jpg';
+import landingCoastAfternoonPortraitHigh from './assets/scenes/landing-coast-afternoon-v2-portrait-high.jpg';
+import landingCoastAfternoonPortrait from './assets/scenes/landing-coast-afternoon-v2-portrait.jpg';
 import landingCoastAfternoon from './assets/scenes/landing-coast-afternoon-v2.png';
+import landingMountainLandscapeHigh from './assets/scenes/landing-mountain-morning-v2-landscape-high.jpg';
+import landingMountainPortraitHigh from './assets/scenes/landing-mountain-morning-v2-portrait-high.jpg';
+import landingMountainPortrait from './assets/scenes/landing-mountain-morning-v2-portrait.jpg';
 import landingImage from './assets/scenes/landing-mountain-morning-v2.png';
 import type { ReaderCommand } from './global';
 import {
@@ -101,6 +113,11 @@ type ReaderLocation = { anchor: number } | { ratio: number };
 type ReaderPins = Record<string, ReaderLocation>;
 type ReaderProgress = Record<string, ReaderLocation>;
 
+type PreparedBookOpening = {
+  book: Book;
+  location: ReaderLocation;
+};
+
 const HIDDEN_SAMPLE_BOOKS_KEY = 'hiddenSampleBooks:v1';
 const FINISHED_BOOKS_KEY = 'finishedBooks:v1';
 const hiddenSampleBookIds = new Set<string>(
@@ -136,6 +153,8 @@ const landingScenes = [
     id: 'mountain',
     label: '清晨山野',
     src: landingImage,
+    landscapeSrcSet: `${landingImage} 1586w, ${landingMountainLandscapeHigh} 5120w`,
+    portraitSrcSet: `${landingMountainPortrait} 941w, ${landingMountainPortraitHigh} 2881w`,
     position: 'center 48%',
     ink: 'light',
   },
@@ -143,6 +162,10 @@ const landingScenes = [
     id: 'coast',
     label: '午后海岸',
     src: landingCoastAfternoon,
+    landscapeSrcSet:
+      `${landingCoastAfternoon} 1586w, ${landingCoastAfternoonLandscapeHigh} 5120w`,
+    portraitSrcSet:
+      `${landingCoastAfternoonPortrait} 941w, ${landingCoastAfternoonPortraitHigh} 2881w`,
     position: 'center',
     ink: 'dark',
   },
@@ -150,6 +173,8 @@ const landingScenes = [
     id: 'city-dusk',
     label: '黄昏都市',
     src: landingCityDusk,
+    landscapeSrcSet: `${landingCityDusk} 1586w, ${landingCityDuskLandscapeHigh} 5120w`,
+    portraitSrcSet: `${landingCityDuskPortrait} 941w, ${landingCityDuskPortraitHigh} 2881w`,
     position: 'center',
     ink: 'light',
   },
@@ -157,6 +182,10 @@ const landingScenes = [
     id: 'city-morning',
     label: '清晨街景',
     src: landingCityMorning,
+    landscapeSrcSet:
+      `${landingCityMorning} 1586w, ${landingCityMorningLandscapeHigh} 5120w`,
+    portraitSrcSet:
+      `${landingCityMorningPortrait} 941w, ${landingCityMorningPortraitHigh} 2881w`,
     position: 'center',
     ink: 'dark',
   },
@@ -367,13 +396,29 @@ app.innerHTML = `
       aria-label="阅开始页"
       data-ui-ink="${initialLandingScene.ink}"
     >
-      <img
-        class="landing-scene"
-        data-landing-scene
-        src="${initialLandingScene.src}"
-        style="object-position: ${initialLandingScene.position}"
-        alt="首页背景：${initialLandingScene.label}"
-      />
+      <picture class="scene-picture">
+        <source
+          data-scene-source="portrait"
+          media="(orientation: portrait)"
+          srcset="${initialLandingScene.portraitSrcSet}"
+          sizes="100vw"
+        />
+        <source
+          data-scene-source="landscape"
+          media="(orientation: landscape)"
+          srcset="${initialLandingScene.landscapeSrcSet}"
+          sizes="100vw"
+        />
+        <img
+          class="landing-scene"
+          data-landing-scene
+          src="${initialLandingScene.src}"
+          style="object-position: ${initialLandingScene.position}"
+          alt="首页背景：${initialLandingScene.label}"
+          decoding="async"
+          fetchpriority="high"
+        />
+      </picture>
       <div class="landing-atmosphere" aria-hidden="true"></div>
       <button
         class="landing-entry"
@@ -406,13 +451,28 @@ app.innerHTML = `
       data-phase="browsing"
       data-ui-ink="${initialLandingScene.ink}"
     >
-      <img
-        class="library-scene"
-        data-library-scene
-        src="${initialLandingScene.src}"
-        style="object-position: ${initialLandingScene.position}"
-        alt="书架背景：${initialLandingScene.label}"
-      />
+      <picture class="scene-picture">
+        <source
+          data-scene-source="portrait"
+          media="(orientation: portrait)"
+          srcset="${initialLandingScene.portraitSrcSet}"
+          sizes="100vw"
+        />
+        <source
+          data-scene-source="landscape"
+          media="(orientation: landscape)"
+          srcset="${initialLandingScene.landscapeSrcSet}"
+          sizes="100vw"
+        />
+        <img
+          class="library-scene"
+          data-library-scene
+          src="${initialLandingScene.src}"
+          style="object-position: ${initialLandingScene.position}"
+          alt="书架背景：${initialLandingScene.label}"
+          decoding="async"
+        />
+      </picture>
       <div class="library-atmosphere" aria-hidden="true"></div>
 
       <aside class="library-side-rail" aria-label="书架导航">
@@ -577,20 +637,39 @@ app.innerHTML = `
       tabindex="-1"
       inert
     >
-      <img
-        class="reader-scene"
-        data-reader-scene
-        src="${initialLandingScene.src}"
-        style="object-position: ${initialLandingScene.position}"
-        alt=""
-        aria-hidden="true"
-      />
+      <picture class="scene-picture" aria-hidden="true">
+        <source
+          data-scene-source="portrait"
+          media="(orientation: portrait)"
+          srcset="${initialLandingScene.portraitSrcSet}"
+          sizes="100vw"
+        />
+        <source
+          data-scene-source="landscape"
+          media="(orientation: landscape)"
+          srcset="${initialLandingScene.landscapeSrcSet}"
+          sizes="100vw"
+        />
+        <img
+          class="reader-scene"
+          data-reader-scene
+          src="${initialLandingScene.src}"
+          style="object-position: ${initialLandingScene.position}"
+          alt=""
+          decoding="async"
+        />
+      </picture>
       <div class="reader-ambient" aria-hidden="true"></div>
       <div class="reader-surface" tabindex="0" aria-label="连续阅读正文">
         <div class="book-copy">
           <article class="page-copy reading-document" data-reading-document></article>
         </div>
       </div>
+      <div
+        class="reader-opening-curtain"
+        data-reader-opening-curtain
+        aria-hidden="true"
+      ></div>
       <div class="reader-scroll-fade reader-scroll-fade-top" aria-hidden="true"></div>
       <div class="reader-scroll-fade reader-scroll-fade-bottom" aria-hidden="true"></div>
       <span class="reader-page-number" data-reader-page-number aria-label="页码">
@@ -802,6 +881,7 @@ const transitionCover = queryRequired<HTMLElement>('.transition-cover');
 const transitionTitle = queryRequired<HTMLElement>('[data-transition-title]');
 const bookCopy = queryRequired<HTMLElement>('.book-copy');
 const readingDocumentElement = queryRequired<HTMLElement>('[data-reading-document]');
+const readerOpeningCurtain = queryRequired<HTMLElement>('[data-reader-opening-curtain]');
 const readerStatus = queryRequired<HTMLElement>('[data-reader-status]');
 const appStatus = queryRequired<HTMLElement>('[data-app-status]');
 const importInput = queryRequired<HTMLInputElement>('[data-import-input]');
@@ -946,6 +1026,8 @@ const cacheLoadedBook = (book: Book) => {
 
 const nextFrame = () =>
   new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+const DOM_WORK_FRAME_BUDGET_MS = 8;
 
 const afterPaint = () =>
   new Promise<void>((resolve) => {
@@ -1299,14 +1381,26 @@ const createMarkdownListGroup = (entries: MarkdownListEntry[]) => {
   return fragment;
 };
 
-const appendStructuredPageContent = (pageBody: HTMLElement, page: SourcePage) => {
+const appendStructuredPageContent = async (
+  pageBody: HTMLElement,
+  page: SourcePage,
+) => {
   const segments = page.segments ?? createTextSegments(page.paragraphs);
   const formatByParagraph = new Map(
     (page.formats ?? []).map((format) => [format.paragraphIndex, format]),
   );
   let index = 0;
+  let frameStartedAt = performance.now();
 
   while (index < segments.length) {
+    if (
+      index > 0
+      && performance.now() - frameStartedAt >= DOM_WORK_FRAME_BUDGET_MS
+    ) {
+      await nextFrame();
+      frameStartedAt = performance.now();
+    }
+
     const segment = segments[index];
     const format = formatByParagraph.get(segment.paragraphIndex);
 
@@ -1404,7 +1498,7 @@ const appendStructuredPageContent = (pageBody: HTMLElement, page: SourcePage) =>
   }
 };
 
-const createPageElement = (page: SourcePage) => {
+const createPageElement = async (page: SourcePage) => {
   const pageInner = document.createElement('div');
   const pageBody = document.createElement('div');
 
@@ -1414,16 +1508,14 @@ const createPageElement = (page: SourcePage) => {
   }
   pageBody.className = 'page-body';
 
-  appendStructuredPageContent(pageBody, page);
+  await appendStructuredPageContent(pageBody, page);
   pageInner.append(pageBody);
   return pageInner;
 };
 
-const renderReadingDocument = () => {
+const renderReadingDocument = async () => {
   readingLayoutPoints = [];
-  readingDocumentElement.replaceChildren(createPageElement(readingDocument));
-  updateReaderNavigation();
-  renderProgressBookmarks();
+  readingDocumentElement.replaceChildren(await createPageElement(readingDocument));
 };
 
 const normalizeHexColor = (value: unknown): string | null => {
@@ -1746,22 +1838,51 @@ type ReadingLayoutPoint = {
 
 let readingLayoutPoints: ReadingLayoutPoint[] = [];
 
+const createReadingLayoutPoint = (
+  element: HTMLElement,
+  surfaceTop: number,
+): ReadingLayoutPoint | undefined => {
+  const anchor = Number(element.dataset.textOffset);
+
+  if (!Number.isFinite(anchor)) {
+    return undefined;
+  }
+  return {
+    anchor,
+    top: readerSurface.scrollTop
+      + element.getBoundingClientRect().top
+      - surfaceTop,
+  };
+};
+
 const refreshReadingLayout = () => {
-  const surfaceBounds = readerSurface.getBoundingClientRect();
+  const surfaceTop = readerSurface.getBoundingClientRect().top;
 
   readingLayoutPoints = getReadingBlocks().flatMap((element) => {
-    const anchor = Number(element.dataset.textOffset);
+    const point = createReadingLayoutPoint(element, surfaceTop);
 
-    if (!Number.isFinite(anchor)) {
-      return [];
-    }
-    return [{
-      anchor,
-      top: readerSurface.scrollTop
-        + element.getBoundingClientRect().top
-        - surfaceBounds.top,
-    }];
+    return point ? [point] : [];
   });
+};
+
+const prepareReadingLayout = async () => {
+  const elements = getReadingBlocks();
+  const surfaceTop = readerSurface.getBoundingClientRect().top;
+  const points: ReadingLayoutPoint[] = [];
+  let frameStartedAt = performance.now();
+
+  for (const element of elements) {
+    if (performance.now() - frameStartedAt >= DOM_WORK_FRAME_BUDGET_MS) {
+      await nextFrame();
+      frameStartedAt = performance.now();
+    }
+    const point = createReadingLayoutPoint(element, surfaceTop);
+
+    if (point) {
+      points.push(point);
+    }
+  }
+  readingLayoutPoints = points;
 };
 
 const findLayoutPoint = (value: number, key: keyof ReadingLayoutPoint) => {
@@ -2124,13 +2245,14 @@ const prepareReadingDocument = async (
 
   try {
     await document.fonts.ready;
+    await nextFrame();
     readingDocument = createReadingPage(
       book,
       createTextSegments(getBookParagraphs(book)),
     );
-    renderReadingDocument();
+    await renderReadingDocument();
     await afterPaint();
-    refreshReadingLayout();
+    await prepareReadingLayout();
     renderReaderMinimapBars();
     const anchor = resolveReaderLocation(location);
 
@@ -2490,58 +2612,20 @@ const getReaderExpansion = (bookWidth: number, bookHeight: number) => {
   };
 };
 
-const openBook = async (
+const openPreparedBook = async (
   book: Book,
-  trigger: HTMLButtonElement,
+  location: ReaderLocation,
   requestRevision: number,
-  transitionAlreadyCentered = false,
 ): Promise<OpenBookResult> => {
-  if (mode !== 'library') {
-    return 'cancelled';
-  }
-
-  activeBook = book;
-  activeTrigger = trigger;
-  announceStatus('正在载入正文…');
-  const location = readingProgress[book.id] ?? { anchor: 0 };
-  const ready = await prepareReadingDocument(book, location);
-
-  if (
-    !ready
-    || requestRevision !== openRequestRevision
-    || mode !== 'library'
-    || activeBook.id !== book.id
-  ) {
-    transitionBook.classList.remove('is-visible');
-    if (requestRevision === openRequestRevision) {
-      announceStatus('暂时无法打开这本书');
-      return 'failed';
-    }
+  if (mode !== 'library' || activeBook.id !== book.id) {
     return 'cancelled';
   }
 
   loadingBookId = null;
-  await afterPaint();
   setMode('opening');
   prepareTransitionBook(book);
-  const frame = positionTransitionBook();
-  const start = transitionAlreadyCentered
-    ? frame
-    : trigger.getBoundingClientRect();
-  const translateX = transitionAlreadyCentered
-    ? 0
-    : start.left + start.width / 2 - (frame.left + frame.width / 2);
-  const translateY = transitionAlreadyCentered
-    ? 0
-    : start.top + start.height / 2 - (frame.top + frame.height / 2);
-  const scaleX = transitionAlreadyCentered
-    ? 1
-    : Math.max(start.width / frame.width, 0.08);
-  const scaleY = transitionAlreadyCentered
-    ? 1
-    : Math.max(start.height / frame.height, 0.12);
-  const readerTarget = getReaderExpansion(frame.width, frame.height);
-  const duration = reducedMotion.matches ? 150 : transitionAlreadyCentered ? 520 : 720;
+  positionTransitionBook();
+  const duration = reducedMotion.matches ? 120 : 460;
 
   playPageSound('forward');
 
@@ -2553,48 +2637,18 @@ const openBook = async (
   const bookAnimation = transitionBook.animate(
     reducedMotion.matches
       ? [{ opacity: 1 }, { opacity: 0 }]
-      : transitionAlreadyCentered
-        ? [
-            {
-              transform: 'translate3d(0, 0, 0) scale(1)',
-              opacity: 1,
-            },
-            {
-              transform: 'translate3d(0, -4px, 22px) scale(1.035)',
-              opacity: 1,
-              offset: 0.34,
-            },
-            {
-              transform: `translate3d(${readerTarget.translateX}px, 0, 0)
-                scale(${readerTarget.scaleX}, ${readerTarget.scaleY}) rotateY(0)`,
-              opacity: 0,
-            },
-          ]
-        : [
+      : [
           {
-            transform: `translate3d(${translateX}px, ${translateY}px, 0)
-              scale(${scaleX}, ${scaleY}) rotateX(58deg) rotateZ(2deg)`,
+            transform: 'translate3d(0, 0, 0) scale(1)',
             opacity: 1,
           },
           {
-            transform: `translate3d(${translateX * 0.48}px, ${translateY * 0.48 - 18}px, 72px)
-              scale(.86) rotateX(18deg) rotateZ(-1deg)`,
+            transform: 'translate3d(0, -5px, 22px) scale(1.035)',
             opacity: 1,
-            offset: 0.24,
+            offset: 0.32,
           },
           {
-            transform: 'translate3d(0, 0, 0) scale(.98) rotateX(0) rotateZ(0)',
-            opacity: 1,
-            offset: 0.44,
-          },
-          {
-            transform: 'translate3d(0, 0, 0) scale(1.05) rotateX(0) rotateZ(0)',
-            opacity: 1,
-            offset: 0.61,
-          },
-          {
-            transform: `translate3d(${readerTarget.translateX}px, 0, 0)
-              scale(${readerTarget.scaleX}, ${readerTarget.scaleY}) rotateY(0)`,
+            transform: 'translate3d(0, -2px, 12px) scale(1.075)',
             opacity: 0,
           },
         ],
@@ -2607,31 +2661,36 @@ const openBook = async (
           { transform: 'rotateY(0deg)' },
           {
             transform: 'rotateY(0deg)',
-            offset: transitionAlreadyCentered ? 0.18 : 0.4,
+            offset: 0.18,
           },
           {
             transform: 'rotateY(-158deg)',
-            offset: transitionAlreadyCentered ? 0.7 : 0.72,
+            offset: 0.72,
           },
           { transform: 'rotateY(-166deg)' },
         ],
     timing,
   );
-  const readerAnimation = readerView.animate(
+  const curtainAnimation = readerOpeningCurtain.animate(
     reducedMotion.matches
-      ? [{ opacity: 1 }, { opacity: 1 }]
+      ? [{ opacity: 1 }, { opacity: 0 }]
       : [
-          { opacity: 1, transform: 'scale(.95)' },
           {
             opacity: 1,
-            transform: 'scale(.96)',
-            offset: transitionAlreadyCentered ? 0.48 : 0.62,
           },
-          { opacity: 1, transform: 'scale(1)' },
+          {
+            opacity: 1,
+            offset: 0.24,
+          },
+          {
+            opacity: 0,
+            offset: 0.82,
+          },
+          { opacity: 0 },
         ],
     timing,
   );
-  const animations = [bookAnimation, coverAnimation, readerAnimation];
+  const animations = [bookAnimation, coverAnimation, curtainAnimation];
 
   activeAnimations = animations;
   await waitForAnimations(animations, duration + 240);
@@ -3248,34 +3307,52 @@ const openBookSummary = async (book: Book, trigger: HTMLButtonElement) => {
   setLibraryPanel(null, { restoreFocus: false });
 
   try {
-    let readableBook = book;
+    const preparationPromise = (async (): Promise<PreparedBookOpening | null> => {
+      let readableBook = book;
 
-    if (book.imported && !book.paragraphs) {
-      announceStatus(`正在取出《${book.title}》…`);
-      const cachedBook = loadedBookCache.get(book.id);
+      if (book.imported && !book.paragraphs) {
+        announceStatus(`正在取出《${book.title}》…`);
+        const cachedBook = loadedBookCache.get(book.id);
 
-      readableBook = cachedBook ?? await loadImportedBook(book.id);
-      if (cachedBook) {
-        cacheLoadedBook(cachedBook);
-      } else {
+        readableBook = cachedBook ?? await loadImportedBook(book.id);
         cacheLoadedBook(readableBook);
       }
-    }
+      if (requestRevision !== openRequestRevision || mode !== 'library') {
+        return null;
+      }
 
-    const centered = await flightPromise;
-    if (!centered || requestRevision !== openRequestRevision || mode !== 'library') {
+      activeBook = readableBook;
+      activeTrigger = getPhysicalBookButton(book.id) ?? physicalTrigger;
+      announceStatus('正在载入正文…');
+      const location = readingProgress[book.id] ?? { anchor: 0 };
+      const ready = await prepareReadingDocument(readableBook, location);
+
+      return ready
+        && requestRevision === openRequestRevision
+        && mode === 'library'
+        && activeBook.id === readableBook.id
+        ? { book: readableBook, location }
+        : null;
+    })();
+    const [centered, prepared] = await Promise.all([
+      flightPromise,
+      preparationPromise,
+    ]);
+
+    if (
+      !centered
+      || !prepared
+      || requestRevision !== openRequestRevision
+      || mode !== 'library'
+    ) {
+      transitionBook.classList.remove('is-visible');
+      if (!prepared && requestRevision === openRequestRevision) {
+        announceStatus('暂时无法打开这本书');
+      }
       return;
     }
 
-    if (!reducedMotion.matches) {
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 72));
-    }
-    if (requestRevision !== openRequestRevision || mode !== 'library') {
-      return;
-    }
-    const returnTrigger = getPhysicalBookButton(book.id) ?? physicalTrigger;
-
-    await openBook(readableBook, returnTrigger, requestRevision, true);
+    await openPreparedBook(prepared.book, prepared.location, requestRevision);
   } catch (error) {
     await flightPromise.catch((): void => undefined);
     transitionBook.classList.remove('is-visible');

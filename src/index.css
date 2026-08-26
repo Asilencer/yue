@@ -517,6 +517,20 @@ button {
   scroll-behavior: auto;
 }
 
+.reader-opening-curtain {
+  position: absolute;
+  z-index: 19;
+  inset: 0;
+  opacity: 0;
+  background: var(--reader-paper-background);
+  pointer-events: none;
+}
+
+.app-shell[data-mode="opening"] .reader-opening-curtain {
+  opacity: 1;
+  will-change: opacity;
+}
+
 .book-copy::before {
   position: absolute;
   z-index: 6;
