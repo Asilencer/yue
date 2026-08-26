@@ -5,14 +5,9 @@ import {
   type MenuItemConstructorOptions,
 } from 'electron';
 import path from 'node:path';
-import started from 'electron-squirrel-startup';
 import type { ReaderCommand } from './global';
 
 const READER_COMMAND_CHANNEL = 'reader-command';
-
-if (started) {
-  app.quit();
-}
 
 app.enableSandbox();
 
@@ -54,7 +49,7 @@ const installApplicationMenu = () => {
           click: () => sendReaderCommand('toggle-bookmark'),
         },
         {
-          label: '显示阅读位置',
+          label: '显示目录',
           accelerator: 'Command+T',
           click: () => sendReaderCommand('show-contents'),
         },
@@ -120,6 +115,3 @@ app.on('activate', () => {
     createWindow();
   }
 });
-
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and import them here.

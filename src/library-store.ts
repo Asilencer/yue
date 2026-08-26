@@ -85,7 +85,6 @@ export type ImportedBookRecord = {
   author: string;
   color: string;
   cover?: string;
-  chapterTitle: string;
   paragraphs: string[];
   chapters: ImportedBookChapter[];
   formats: ImportedBookFormat[];
@@ -389,7 +388,6 @@ const readBookMetadata = (value: unknown): ImportedBookMetadata | null => {
     author,
     color,
     cover,
-    chapterTitle,
     sourceName,
     sourceFormat,
     imported,
@@ -409,7 +407,6 @@ const readBookMetadata = (value: unknown): ImportedBookMetadata | null => {
         || !isStoredCover(cover)
       )
     )
-    || typeof chapterTitle !== 'string'
     || (
       sourceName !== undefined
       && (typeof sourceName !== 'string' || !sourceName || sourceName.length > 512)
@@ -429,7 +426,6 @@ const readBookMetadata = (value: unknown): ImportedBookMetadata | null => {
     author,
     color,
     ...(typeof cover === 'string' ? { cover } : {}),
-    chapterTitle,
     ...(typeof sourceName === 'string' ? { sourceName } : {}),
     sourceFormat,
     imported,
@@ -511,7 +507,6 @@ const toStoredMetadata = (book: ImportedBookRecord): StoredBookMetadata => ({
   author: book.author,
   color: book.color,
   ...(book.cover ? { cover: book.cover } : {}),
-  chapterTitle: book.chapterTitle,
   ...(book.sourceName ? { sourceName: book.sourceName } : {}),
   sourceFormat: book.sourceFormat,
   imported: true,
@@ -702,8 +697,7 @@ const normalizeMarkdownTextNode = (value: string) => value
       ? ''
       : ' ';
   })
-  .replace(/[ \t]+/g, ' ')
-  .replace(/(?<!\\)(?:\*{2}|~{2})/g, '');
+  .replace(/[ \t]+/g, ' ');
 
 const appendInlineRun = (
   runs: ImportedInlineRun[],
@@ -924,10 +918,14 @@ const parseMarkdownContent = (tree: Root, title: string) => {
   };
   const appendTable = (table: Table) => {
     const groupId = nextGroupId;
-    const alignments = table.align.map((alignment) => alignment ?? 'left');
+    const alignments = (table.align ?? []).map((alignment) => alignment ?? 'left');
+    const syntheticHeader = table.children[0]?.children.every((cell) => (
+      !inlineRunsText(normalizeInlineRuns(cell.children)).trim()
+    ));
+    const rows = syntheticHeader ? table.children.slice(1) : table.children;
 
     nextGroupId += 1;
-    table.children.forEach((row, rowIndex) => {
+    rows.forEach((row, rowIndex) => {
       const runsByCell = row.children.map((cell) => normalizeInlineRuns(cell.children));
       const cells = runsByCell.map(inlineRunsText);
       const cellInlines = runsByCell.map((runs) => (
@@ -935,7 +933,13 @@ const parseMarkdownContent = (tree: Root, title: string) => {
       ));
       const rowAlignments = cells.map((_, index) => alignments[index] ?? 'left');
 
-      appendTableRow(cells, cellInlines, rowAlignments, groupId, rowIndex === 0);
+      appendTableRow(
+        cells,
+        cellInlines,
+        rowAlignments,
+        groupId,
+        !syntheticHeader && rowIndex === 0,
+      );
     });
   };
   const collectListItemRuns = (item: ListItem) => {
@@ -1060,80 +1064,11 @@ const parseMarkdownContent = (tree: Root, title: string) => {
   return { paragraphs, chapters, formats };
 };
 
-const importedContentsTitlePattern = /^(?:目\s*录(?:页)?|目\s*次|contents|table\s+of\s+contents)$/iu;
-
-const stripImportedContents = (
-  content: ReturnType<typeof parseMarkdownContent>,
-) => {
-  const formatByParagraph = new Map(
-    content.formats.map((format) => [format.paragraphIndex, format]),
-  );
-  const searchLimit = Math.min(80, Math.max(8, Math.ceil(content.paragraphs.length * 0.15)));
-  const start = content.paragraphs.findIndex((paragraph, index) => {
-    if (index >= searchLimit || !importedContentsTitlePattern.test(paragraph.trim())) {
-      return false;
-    }
-    return formatByParagraph.get(index)?.kind === 'heading' || index < 5;
-  });
-
-  if (start < 0) {
-    return content;
-  }
-
-  const nextHeading = content.formats
-    .filter((format) => format.kind === 'heading' && format.paragraphIndex > start)
-    .sort((left, right) => left.paragraphIndex - right.paragraphIndex)[0];
-  let end = nextHeading?.paragraphIndex;
-
-  if (end === undefined) {
-    let cursor = start + 1;
-    let entryCount = 0;
-
-    while (cursor < content.paragraphs.length) {
-      const paragraph = content.paragraphs[cursor];
-      const format = formatByParagraph.get(cursor);
-      const indexEntry = format?.kind === 'list-item'
-        || format?.kind === 'table-row'
-        || /(?:\.{2,}|…{2,}|·{2,}|\s)\s*\d{1,4}$/u.test(paragraph);
-
-      if (!indexEntry) {
-        break;
-      }
-      entryCount += 1;
-      cursor += 1;
-    }
-    if (entryCount < 2) {
-      return content;
-    }
-    end = cursor;
-  }
-
-  const removedCount = end - start;
-  const remapIndex = (paragraphIndex: number) => (
-    paragraphIndex < start ? paragraphIndex : paragraphIndex - removedCount
-  );
-  const paragraphs = content.paragraphs.filter((_, index) => (
-    index < start || index >= end
-  ));
-  const chapters = content.chapters.flatMap((chapter): ImportedBookChapter[] => (
-    chapter.paragraphIndex >= start && chapter.paragraphIndex < end
-      ? []
-      : [{ ...chapter, paragraphIndex: remapIndex(chapter.paragraphIndex) }]
-  ));
-  const formats = content.formats.flatMap((format): ImportedBookFormat[] => (
-    format.paragraphIndex >= start && format.paragraphIndex < end
-      ? []
-      : [{ ...format, paragraphIndex: remapIndex(format.paragraphIndex) }]
-  ));
-
-  return { paragraphs, chapters, formats };
-};
-
 const hashTitle = (title: string) => Array.from(title)
   .reduce((hash, character) => hash + (character.codePointAt(0) ?? 0), 0);
 
-const createBookId = async (title: string, source: string) => {
-  const bytes = new TextEncoder().encode(`${title}\0${source}`);
+const createBookId = async (title: string, author: string, source: string) => {
+  const bytes = new TextEncoder().encode(`${title}\0${author}\0${source}`);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   const fingerprint = [...new Uint8Array(digest)]
     .map((byte) => byte.toString(16).padStart(2, '0'))
@@ -1161,9 +1096,7 @@ export const parseImportedBook = async (
     ),
     48,
   );
-  const parsedContent = stripImportedContents(
-    parseMarkdownContent(markdownTree, title),
-  );
+  const parsedContent = parseMarkdownContent(markdownTree, title);
   const { paragraphs, chapters, formats } = parsedContent;
   options.onProgress?.(0.84);
 
@@ -1171,20 +1104,20 @@ export const parseImportedBook = async (
     throw new Error('文件中没有可阅读的正文');
   }
 
-  const id = await createBookId(title, document.source);
+  const author = truncateUnicode(
+    normalizePlainText(document.author || '本地导入'),
+    48,
+  );
+  const id = await createBookId(title, author, document.source);
   options.onProgress?.(1);
   const { cover } = document;
 
   return {
     id,
     title,
-    author: truncateUnicode(
-      normalizePlainText(document.author || '本地导入'),
-      48,
-    ),
+    author,
     color: coverColors[hashTitle(title) % coverColors.length],
     ...(cover ? { cover } : {}),
-    chapterTitle: title,
     sourceName: truncateUnicode(file.name, 512),
     paragraphs,
     chapters,
@@ -1223,51 +1156,6 @@ export const loadImportedBookMetadata = async (): Promise<ImportedBookMetadata[]
       .filter((book): book is ImportedBookMetadata => (
         book !== null && contentIds.has(book.id)
       )));
-  } finally {
-    database.close();
-  }
-};
-
-export const loadImportedBooks = async (): Promise<ImportedBookRecord[]> => {
-  const database = await openDatabase();
-
-  try {
-    const transaction = database.transaction(
-      [METADATA_STORE_NAME, CONTENT_STORE_NAME],
-      'readonly',
-    );
-    const [metadataValues, contentValues] = await completeTransaction(
-      transaction,
-      Promise.all([
-        requestValue(transaction.objectStore(METADATA_STORE_NAME).getAll()),
-        requestValue(transaction.objectStore(CONTENT_STORE_NAME).getAll()),
-      ]),
-    );
-    const contentById = new Map<string, StoredBookContent>();
-
-    contentValues.forEach((value) => {
-      const content = readStoredContent(value);
-
-      if (content) {
-        contentById.set(content.id, content);
-      }
-    });
-
-    return sortMetadata(metadataValues
-      .map((value) => readStoredMetadata(value))
-      .filter((book): book is ImportedBookMetadata => book !== null))
-      .flatMap((metadata): ImportedBookRecord[] => {
-        const content = contentById.get(metadata.id);
-
-        return content
-          ? [{
-              ...metadata,
-              paragraphs: content.paragraphs,
-              chapters: content.chapters,
-              formats: content.formats,
-            }]
-          : [];
-      });
   } finally {
     database.close();
   }
@@ -1318,7 +1206,10 @@ export const loadImportedBook = async (id: string): Promise<ImportedBookRecord> 
   }
 };
 
-export const saveImportedBook = async (book: ImportedBookRecord): Promise<void> => {
+export const saveImportedBook = async (
+  book: ImportedBookRecord,
+  replaceExisting = false,
+): Promise<void> => {
   if (!readImportedBook(book)) {
     throw new Error('无法保存损坏的书籍数据');
   }
@@ -1330,16 +1221,20 @@ export const saveImportedBook = async (book: ImportedBookRecord): Promise<void> 
       [METADATA_STORE_NAME, CONTENT_STORE_NAME],
       'readwrite',
     );
+    const metadataStore = transaction.objectStore(METADATA_STORE_NAME);
+    const contentStore = transaction.objectStore(CONTENT_STORE_NAME);
+    const writeMetadata = replaceExisting
+      ? metadataStore.put(toStoredMetadata(book))
+      : metadataStore.add(toStoredMetadata(book));
+    const writeContent = replaceExisting
+      ? contentStore.put(toStoredContent(book))
+      : contentStore.add(toStoredContent(book));
 
     await completeTransaction(
       transaction,
       Promise.all([
-        requestValue(
-          transaction.objectStore(METADATA_STORE_NAME).put(toStoredMetadata(book)),
-        ),
-        requestValue(
-          transaction.objectStore(CONTENT_STORE_NAME).put(toStoredContent(book)),
-        ),
+        requestValue(writeMetadata),
+        requestValue(writeContent),
       ]).then((): void => undefined),
     );
   } finally {

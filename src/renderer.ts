@@ -1,47 +1,11 @@
-/**
- * This file will automatically be loaded by vite and run in the "renderer" context.
- * To learn more about the differences between the "main" and the "renderer" context in
- * Electron, visit:
- *
- * https://electronjs.org/docs/tutorial/process-model
- *
- * By default, Node.js integration in this file is disabled. When enabling Node.js integration
- * in a renderer process, please be aware of potential security implications. You can read
- * more about security risks here:
- *
- * https://electronjs.org/docs/tutorial/security
- *
- * To enable Node.js integration in this file, open up `main.ts` and enable the `nodeIntegration`
- * flag:
- *
- * ```
- *  // Create the browser window.
- *  mainWindow = new BrowserWindow({
- *    width: 800,
- *    height: 600,
- *    webPreferences: {
- *      nodeIntegration: true
- *    }
- *  });
- * ```
- */
-
 import hljs from 'highlight.js/lib/common';
-import katex from 'katex';
+import { render as renderMath } from 'katex';
 import 'katex/dist/katex.min.css';
 import './index.css';
 import pageTurnBackwardOne from './assets/audio/page-turn-backward-01.ogg';
 import pageTurnBackwardTwo from './assets/audio/page-turn-backward-02.ogg';
 import pageTurnForwardOne from './assets/audio/page-turn-forward-01.ogg';
 import pageTurnForwardTwo from './assets/audio/page-turn-forward-02.ogg';
-import distanceCover from './assets/covers/distance-cover.jpg';
-import lakeCover from './assets/covers/lake-cover.jpg';
-import lettersCover from './assets/covers/letters-cover.jpg';
-import northCover from './assets/covers/north-cover.jpg';
-import notesCover from './assets/covers/notes-cover.jpg';
-import plantsCover from './assets/covers/plants-cover.jpg';
-import routeCover from './assets/covers/route-cover.jpg';
-import springCover from './assets/covers/spring-cover.jpg';
 import distanceCoverTemplate from './assets/covers/backgrounds/distance.jpg';
 import lakeCoverTemplate from './assets/covers/backgrounds/lake.jpg';
 import lettersCoverTemplate from './assets/covers/backgrounds/letters.jpg';
@@ -71,16 +35,21 @@ import {
 import {
   createTextSegments,
   type TextSegment,
-} from './paginator';
+} from './text-segments';
+import {
+  sampleBooks,
+  sampleParagraphs,
+  type SampleBook,
+} from './sample-library';
 import { createThinkingOrb } from './thinking-orb';
 
 type AppMode = 'landing' | 'library' | 'opening' | 'reading' | 'closing';
 type Direction = 'forward' | 'backward';
-type ReaderPanel = 'appearance';
+type ReaderPanel = 'contents' | 'appearance';
 type LibraryPanel = 'search' | 'import' | 'background' | 'appearance';
 type LibraryCategory = 'all' | 'reading' | 'finished';
 type OpenBookResult = 'opened' | 'cancelled' | 'failed';
-type BookMaterial = 'cloth' | 'paper' | 'aged';
+type BookMaterial = NonNullable<SampleBook['material']>;
 
 const libraryCategoryLabels: Record<LibraryCategory, string> = {
   all: '全部',
@@ -96,9 +65,6 @@ const libraryPanelLabels: Record<LibraryPanel, string> = {
 };
 
 type SourcePage = {
-  runningTitle: string;
-  eyebrow?: string;
-  heading?: string;
   paragraphs: string[];
   segments?: TextSegment[];
   formats?: ImportedBookFormat[];
@@ -110,19 +76,12 @@ type ReadingPage = SourcePage & {
   endOffset: number;
 };
 
-type Book = {
-  id: string;
-  title: string;
-  author: string;
-  color: string;
-  chapterTitle?: string;
+type Book = SampleBook & {
   paragraphs?: string[];
   chapters?: ImportedBookChapter[];
   formats?: ImportedBookFormat[];
   sourceName?: string;
   sourceFormat?: ImportedSourceFormat;
-  material?: BookMaterial;
-  cover?: string;
   imported?: boolean;
 };
 
@@ -131,13 +90,16 @@ type ReaderAppearance = {
   fontSize: number;
   lineHeight: number;
   foreground: string;
+  background: string;
 };
 
 type StoredReaderAppearance = Partial<ReaderAppearance> & {
   font?: 'serif' | 'sans';
 };
 
-type ReaderPins = Record<string, number>;
+type ReaderLocation = { anchor: number } | { ratio: number };
+type ReaderPins = Record<string, ReaderLocation>;
+type ReaderProgress = Record<string, ReaderLocation>;
 
 const HIDDEN_SAMPLE_BOOKS_KEY = 'hiddenSampleBooks:v1';
 const FINISHED_BOOKS_KEY = 'finishedBooks:v1';
@@ -206,189 +168,9 @@ const initialLandingSceneIndex = Math.max(
 );
 const initialLandingScene = landingScenes[initialLandingSceneIndex] ?? landingScenes[0];
 
-const books: Book[] = [
-  {
-    id: 'lake',
-    title: '湖边散记',
-    author: '林望',
-    color: '#5276c7',
-    material: 'cloth',
-    cover: lakeCover,
-  },
-  {
-    id: 'spring',
-    title: '春日庭院',
-    author: '许青禾',
-    color: '#86b99c',
-    material: 'paper',
-    cover: springCover,
-  },
-  {
-    id: 'letters',
-    title: '薄暮书简',
-    author: '周野',
-    color: '#ef8b74',
-    material: 'aged',
-    cover: lettersCover,
-  },
-  {
-    id: 'north',
-    title: '北方手札',
-    author: '沈舟',
-    color: '#273f58',
-    material: 'aged',
-    cover: northCover,
-  },
-  {
-    id: 'plants',
-    title: '寂静植物学',
-    author: '简森',
-    color: '#5c7f70',
-    material: 'cloth',
-    cover: plantsCover,
-  },
-  {
-    id: 'route',
-    title: '微光航线',
-    author: '陈屿',
-    color: '#f2d164',
-    material: 'paper',
-    cover: routeCover,
-  },
-  {
-    id: 'notes',
-    title: '月下笔记',
-    author: '白榆',
-    color: '#5276c7',
-    material: 'cloth',
-    cover: notesCover,
-  },
-  {
-    id: 'distance',
-    title: '远方来信',
-    author: '陶然',
-    color: '#ef8b74',
-    material: 'paper',
-    cover: distanceCover,
-  },
-];
-
-const sourceSpreads: Array<[SourcePage, SourcePage]> = [
-  [
-    {
-      runningTitle: '湖边散记',
-      eyebrow: '第一章',
-      heading: '窗外并不遥远',
-      paragraphs: [
-        '读一本书，并不是为了暂时离开生活。恰恰相反，是为了回来时能够看见更多。'
-          + '清晨的光越过窗框，落在纸页，也落在街道上，文字与现实共享着同一份安静。',
-        '我们常把远方理解成另一个地点，仿佛只有走出熟悉的房间，世界才会重新展开。'
-          + '可是许多真正重要的变化，发生在目光停留得更久之后：一棵树不再只是背景，'
-          + '一段沉默也不再只是没有声音。',
-        '书给人的并非第二个世界，而是一种重新进入这个世界的方法。它把习以为常的事物'
-          + '放慢，让经验里被忽略的纹理重新浮现。我们读到别人的犹疑，也更能辨认自己的犹疑。',
-        '于是阅读开始像一扇向内打开的窗。我们没有离开座位，却已经移动了观看的位置；'
-          + '当视线再次越过纸面，眼前的一切仍旧寻常，却不再只是从前的样子。',
-      ],
-    },
-    {
-      runningTitle: '湖边散记',
-      paragraphs: [
-        '窗外的公交车在路口停下，树叶被风吹向同一个方向。这样的景象每天都会发生，'
-          + '通常只在余光中掠过。可当一段文字让注意力慢下来，熟悉的街道便显出新的层次。',
-        '我们从作者那里借来一双眼睛，却不会永远沿用他的结论。阅读真正珍贵的部分，'
-          + '恰恰是借来的目光与自身经验发生摩擦的时刻。赞同、迟疑和反驳，都在提醒我们：'
-          + '思考并不是接收，而是一种参与。',
-        '这种参与不会在合上书时结束。它可能进入下午的一次会议，让人多问一个问题；'
-          + '也可能进入一段争执，使原本急于回应的人愿意先听完对方的话。文字离开纸面，'
-          + '变成判断和行动，才真正获得了重量。',
-        '因此，读得慢并不等于停滞。停顿有时是一种更深的前进：它让模糊的感受得到名字，'
-          + '让未经检查的习惯显出边界，也让我们有机会决定，下一步是否还要沿着旧路走下去。',
-        '城市仍然喧闹，屏幕上的消息仍不断亮起。但人在一页文字里建立的秩序，可以短暂地'
-          + '抵抗这种牵引。不是拒绝世界，而是把注意力重新交还给自己。',
-      ],
-    },
-  ],
-  [
-    {
-      runningTitle: '窗外并不遥远',
-      paragraphs: [
-        '阅读需要安静，却不必把自己封闭起来。窗外的光线、远处车辆经过的声音，以及房间里'
-          + '缓慢移动的影子，都在提醒人：书页之外还有一个正在发生的世界。',
-        '正因为现实从未停止，纸上的问题才不会只是纸上的问题。关于勇气的句子，会在一次'
-          + '需要表态的时刻回来；关于体谅的故事，会在我们准备轻易判断一个人时，留下片刻迟疑。',
-        '一本书很少直接替人完成选择。它更像在心里增加了一些可以调用的路径，使我们面对'
-          + '复杂情境时，不必只依赖最熟悉、最快速的反应。选择依然属于自己，但选择的空间变大了。',
-        '这种变化往往细小得难以察觉。也许只是把一句绝对的话换成一个开放的问题，或是在忙碌'
-          + '之中注意到同伴的疲惫。阅读的反馈并不总是宏大的，它首先发生在日常尺度里。',
-        '当这些细小的改变积累起来，一个人的生活方式也会随之改变。思想并没有高悬在现实之上，'
-          + '它落在每一次具体的观看、回应和承担里。',
-      ],
-    },
-    {
-      runningTitle: '窗外并不遥远',
-      paragraphs: [
-        '书架像一张私人地图。那些已经读过的书，并不只是完成过的项目；它们记录了人在不同'
-          + '阶段愿意停留的问题。多年以后重新翻开，文字没有变化，读者却已经站在另一处。',
-        '这也是重读的意义。第一次读到的是情节，第二次或许是人物没有说出口的话；年轻时关注'
-          + '远方，后来却更在意归来。书没有替我们保存时间，却让不同时期的自己得以在同一页相遇。',
-        '阅读因此不是一条笔直的道路。人会跳过，会回看，会在一句话旁停得比预想更久。真正舒适'
-          + '的阅读空间，应该允许这些节奏发生，而不是不断提示进度、成就和剩余时间。',
-        '工具越安静，注意力越容易抵达文字。翻页只需要回应手指的意图，界面只在被需要时出现。'
-          + '纸张的触感可以被暗示，却不应成为遮挡内容的表演。',
-        '当形式退到合适的位置，读者才会忘记自己正在使用一款软件。留下来的，是句子本身的速度，'
-          + '以及句子在心里逐渐形成的回声。',
-      ],
-    },
-  ],
-  [
-    {
-      runningTitle: '湖边散记',
-      paragraphs: [
-        '好的文字不会替人结束思考。它留下一个仍在发热的问题，让读者把它带回工作、关系和'
-          + '独处的时刻。问题没有立即的答案，却持续改变我们观察现实的方式。',
-        '有些答案必须经过生活才能成立。书中关于失去的理解，可能要到真正告别时才显出分量；'
-          + '关于自由的想象，也需要在承担后果时才变得完整。阅读提前埋下语言，经验后来使它发芽。',
-        '因此，不必急着把每一本书归纳成几条结论。被记住的有时只是一幅画面、一种语气，或某个'
-          + '尚未解决的矛盾。它们看似零散，却会在未来与新的经历彼此照亮。',
-        '读者真正拥有的并不是书里的句子，而是句子穿过自身之后留下的变化。相同的文字经过不同'
-          + '生命，会抵达不同的位置。这种差异不是误读，而是阅读得以继续发生的原因。',
-        '当我们允许问题保持开放，世界也不再急于被简化。复杂并没有消失，但人可以更从容地与它'
-          + '相处，在确定与未知之间，为下一次理解保留空间。',
-      ],
-    },
-    {
-      runningTitle: '窗外并不遥远',
-      paragraphs: [
-        '读到这里，阳光已经从窗框的一侧移向另一侧。房间没有因为一本书而突然改变，远处的楼宇'
-          + '仍被晨雾包围，街上的人仍沿着各自的方向前行。',
-        '改变的是注意力。它从狭窄的惯性里松开，开始容纳更多真实的声音，也更愿意承认自己的判断'
-          + '可能有限。轻盈不是逃避重量，而是知道什么值得带走，什么可以暂时留在原地。',
-        '每次翻页都像一次小小的练习：承认尚未知道，越过熟悉的边界，然后在另一侧重新站稳。'
-          + '这种练习最终并不指向书本，而指向我们将如何面对下一件真实发生的事。',
-        '窗户始终开着。书中的远方与脚下的街道，从来属于同一个世界。阅读让人短暂停下，不是为了'
-          + '退出现实，而是为了带着更清楚、更柔软也更坚定的目光重新进入。',
-        '合上书以后，思想仍会继续。它藏在一次耐心的倾听、一项更诚实的选择，或一条终于愿意走出'
-          + '去的路里。那是文字在现实中得到的回答，也是阅读真正完成的地方。',
-      ],
-    },
-  ],
-];
-
-const paragraphStream = sourceSpreads
-  .flatMap((spread) => spread)
-  .flatMap((page) => page.paragraphs);
-
-const builtInChapters: ImportedBookChapter[] = [
-  { title: '窗外并不遥远', level: 1, paragraphIndex: 0 },
-  { title: '阅读回到日常', level: 1, paragraphIndex: 9 },
-  { title: '私人的时间地图', level: 1, paragraphIndex: 14 },
-  { title: '保留开放的问题', level: 1, paragraphIndex: 19 },
-  { title: '重新进入现实', level: 1, paragraphIndex: 24 },
-];
+const books: Book[] = sampleBooks;
 
 const emptyPage = (offset = 0): ReadingPage => ({
-  runningTitle: '',
   paragraphs: [],
   startOffset: offset,
   endOffset: offset,
@@ -425,17 +207,6 @@ const reiconImageMountain = `
   <circle cx="7.3333" cy="5.3333" r="2.3333" />
 `;
 
-const reiconBook2 = `
-  <path
-    d="M22 16.7399V4.6699c0-1.2-.98-2.09-2.17-1.99h-.06
-      c-2.1.18-5.29 1.25-7.07 2.37l-.17.11c-.29.18-.77.18-1.06 0l-.25-.15
-      c-1.78-1.11-4.96-2.17-7.06-2.34C2.97 2.5699 2 3.4699 2 4.6599v12.08
-      c0 .96.78 1.86 1.74 1.98l.29.04c2.17.29 5.52 1.39 7.44 2.44l.04.02
-      c.27.15.7.15.96 0 1.92-1.06 5.28-2.17 7.46-2.46l.33-.04c.96-.12 1.74-1.02 1.74-1.98Z"
-  />
-  <path d="M12 5.49v15M7.75 8.49H5.5M8.5 11.49h-3" />
-`;
-
 const reiconBookSaved = `
   <path
     d="M22 4.6699V16.74c0 .96-.78 1.86-1.74 1.98l-.33.04
@@ -448,17 +219,9 @@ const reiconBookSaved = `
   <path d="M12 5.49v15M19 2.78V8l-2-1.33L15 8V3.92c1.31-.52 2.77-.94 4-1.14Z" />
 `;
 
-const reiconArrowLeft2 = `
-  <path d="m15 19.92-6.52-6.52a1.98 1.98 0 0 1 0-2.8L15 4.08" />
-`;
-
 const reiconReply2 = `
   <path d="m10 6.5-5.5 5.5 5.5 5.5" />
   <path d="M4.5 12h10.25c3.45 0 5.75-2.3 5.75-5.75" />
-`;
-
-const reiconArrowRight2 = `
-  <path d="m8.91 19.92 6.52-6.52a1.98 1.98 0 0 0 0-2.8L8.91 4.08" />
 `;
 
 const reiconBookmark2 = `
@@ -562,13 +325,9 @@ const reiconTickCircle = `
 `;
 
 const readerIconPaths = {
-  library: reiconBook2,
   minimapReturn: reiconReply2,
   minimapPin: reiconBookmark2,
-  previous: reiconArrowLeft2,
-  next: reiconArrowRight2,
   contents: reiconBookSaved,
-  bookmark: reiconBookmark2,
   libraryBackground: reiconImageMountain,
   libraryAppearance: reiconSetting4,
   appearanceFont: reiconFeather,
@@ -579,12 +338,15 @@ const readerIconPaths = {
   librarySearch: reiconSearchNormal2,
   trash: reiconTrash9,
   finished: reiconTickCircle,
-  background: `
+  sound: `
+    <path d="M4 10v4h3l4 3V7l-4 3H4Z" />
+    <path d="M15 9.5c1.1 1.33 1.1 3.67 0 5M18 7c2.65 2.75 2.65 7.25 0 10" />
+  `,
+  appearanceBackground: `
     <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
     <circle cx="16.25" cy="8.25" r="1.5" />
     <path d="m5.5 17 4.25-4.5 3.1 3 2.15-2.25L18.5 17" />
   `,
-  appearance: reiconSetting4,
 } as const;
 
 type ReaderIconName = keyof typeof readerIconPaths;
@@ -800,6 +562,7 @@ app.innerHTML = `
                 <span class="segmented-progress-glow"></span>
               </span>
             </div>
+            <ul class="library-import-errors" data-import-errors hidden></ul>
           </div>
         </div>
 
@@ -896,12 +659,27 @@ app.innerHTML = `
             >${renderReaderIcon('minimapReturn')}</button>
             <button
               class="reader-minimap-action"
+              data-reader-action="contents"
+              type="button"
+              aria-label="显示目录"
+              title="显示目录"
+            >${renderReaderIcon('contents')}</button>
+            <button
+              class="reader-minimap-action"
               data-reader-action="bookmark"
               type="button"
               aria-label="固定当前阅读位置"
               aria-pressed="false"
               title="固定当前阅读位置"
             >${renderReaderIcon('minimapPin')}</button>
+            <button
+              class="reader-minimap-action"
+              data-reader-action="sound"
+              type="button"
+              aria-label="关闭开书声音"
+              aria-pressed="true"
+              title="关闭开书声音"
+            >${renderReaderIcon('sound')}</button>
           </nav>
           <span class="visually-hidden" data-reader-title></span>
         </div>
@@ -915,6 +693,14 @@ app.innerHTML = `
         aria-hidden="true"
         inert
       >
+        <div
+          class="reader-hub-view"
+          data-panel-view="contents"
+        >
+          <nav class="reader-contents-nav" aria-label="书籍目录">
+            <div class="reader-panel-list" data-contents-list></div>
+          </nav>
+        </div>
         <div
           class="reader-hub-view"
           data-panel-view="appearance"
@@ -986,11 +772,23 @@ app.innerHTML = `
                   />
                 </span>
               </label>
-              <div class="appearance-actions">
-                <span data-appearance-message role="status" aria-live="polite"></span>
-                <button type="button" data-appearance-reset>恢复默认</button>
-                <button class="appearance-apply" type="submit">应用</button>
-              </div>
+              <label class="appearance-field" data-reader-only>
+                <span class="appearance-field-label">
+                  ${renderReaderIcon('appearanceBackground')}
+                  <span>纸张颜色</span>
+                </span>
+                <span class="appearance-color-input">
+                  <span data-color-preview="background" aria-hidden="true"></span>
+                  <input
+                    data-appearance-input="background"
+                    type="text"
+                    aria-label="纸张颜色"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="#FAF8F2"
+                  />
+                </span>
+              </label>
           </form>
         </div>
       </section>
@@ -1007,7 +805,10 @@ app.innerHTML = `
       </div>
     </div>
 
-    <p class="visually-hidden" data-app-status role="status" aria-live="polite"></p>
+    <div class="app-status" data-app-status data-tone="neutral" hidden>
+      <p data-app-status-message role="status" aria-live="polite"></p>
+      <button type="button" data-app-status-dismiss aria-label="关闭提示">×</button>
+    </div>
   </main>
 `;
 
@@ -1038,6 +839,8 @@ const bookCopy = queryRequired<HTMLElement>('.book-copy');
 const readingDocumentElement = queryRequired<HTMLElement>('[data-reading-document]');
 const readerStatus = queryRequired<HTMLElement>('[data-reader-status]');
 const appStatus = queryRequired<HTMLElement>('[data-app-status]');
+const appStatusMessage = queryRequired<HTMLElement>('[data-app-status-message]');
+const appStatusDismiss = queryRequired<HTMLButtonElement>('[data-app-status-dismiss]');
 const importInput = queryRequired<HTMLInputElement>('[data-import-input]');
 const libraryDock = queryRequired<HTMLElement>('.library-dock');
 const libraryPanel = queryRequired<HTMLElement>('[data-library-panel]');
@@ -1063,6 +866,7 @@ const importStatus = queryRequired<HTMLElement>('[data-import-status]');
 const importPercent = queryRequired<HTMLElement>('[data-import-percent]');
 const importChooseButton = queryRequired<HTMLButtonElement>('[data-import-choose]');
 const importFeedback = queryRequired<HTMLElement>('[data-import-feedback]');
+const importErrors = queryRequired<HTMLUListElement>('[data-import-errors]');
 const settingsOptions = queryRequired<HTMLFormElement>('[data-settings-options]');
 const readerAppearanceMount = queryRequired<HTMLElement>('[data-reader-appearance-mount]');
 const fontFamilyInput = queryRequired<HTMLInputElement>(
@@ -1077,8 +881,9 @@ const lineHeightInput = queryRequired<HTMLInputElement>(
 const foregroundInput = queryRequired<HTMLInputElement>(
   '[data-appearance-input="foreground"]',
 );
-const appearanceMessage = queryRequired<HTMLElement>('[data-appearance-message]');
-const appearanceResetButton = queryRequired<HTMLButtonElement>('[data-appearance-reset]');
+const backgroundInput = queryRequired<HTMLInputElement>(
+  '[data-appearance-input="background"]',
+);
 const readerTitle = queryRequired<HTMLElement>('[data-reader-title]');
 const readerMinimap = queryRequired<HTMLElement>('[data-reader-minimap]');
 const readerMinimapBars = queryRequired<HTMLElement>('[data-reader-minimap-bars]');
@@ -1093,16 +898,27 @@ const returnButton = queryRequired<HTMLButtonElement>('[data-reader-return]');
 const bookmarkButton = queryRequired<HTMLButtonElement>(
   '[data-reader-action="bookmark"]',
 );
+const contentsButton = queryRequired<HTMLButtonElement>(
+  '[data-reader-action="contents"]',
+);
+const soundButton = queryRequired<HTMLButtonElement>(
+  '[data-reader-action="sound"]',
+);
+const contentsList = queryRequired<HTMLElement>('[data-contents-list]');
 const readerPanel = queryRequired<HTMLElement>('[data-reader-panel]');
 const readerControlSurfaces = [readerMinimap, readerPanel];
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
-const APPEARANCE_KEY = 'readerAppearance:v3';
-const PREVIOUS_APPEARANCE_KEY = 'readerAppearance:v2';
+const APPEARANCE_KEY = 'readerAppearance:v4';
+const PREVIOUS_APPEARANCE_KEY = 'readerAppearance:v3';
+const OLDER_APPEARANCE_KEY = 'readerAppearance:v2';
 const LEGACY_APPEARANCE_KEY = 'readerAppearance:v1';
-const PROGRESS_KEY = 'readerProgress:v1';
-const PINS_KEY = 'readerPins:v1';
+const PROGRESS_KEY = 'readerProgress:v2';
+const LEGACY_PROGRESS_KEY = 'readerProgress:v1';
+const PINS_KEY = 'readerPins:v2';
+const LEGACY_PINS_KEY = 'readerPins:v1';
 const LAST_BOOK_KEY = 'lastOpenedBook:v1';
+const PAGE_SOUND_KEY = 'pageSound:v1';
 const MIN_FONT_SIZE = 12;
 const MAX_FONT_SIZE = 32;
 const MIN_LINE_HEIGHT = 1.2;
@@ -1112,12 +928,14 @@ const defaultAppearance: ReaderAppearance = {
   fontSize: 17,
   lineHeight: 1.75,
   foreground: '#252b2d',
+  background: '#faf8f2',
 };
 
 let mode: AppMode = 'landing';
 let activeBook = books[0];
 let activeTrigger: HTMLButtonElement | null = null;
 let activePageSound: HTMLAudioElement | null = null;
+let pageSoundEnabled = localStorage.getItem(PAGE_SOUND_KEY) !== 'false';
 let paperAudioWarningShown = false;
 const lastPageSoundIndex: Record<Direction, number> = {
   forward: -1,
@@ -1132,6 +950,7 @@ let readingDocumentPreparing = false;
 let appearanceInputTimer: number | undefined;
 let scrollProgressFrame: number | undefined;
 let scrollProgressSaveTimer: number | undefined;
+let appStatusTimer: number | undefined;
 let minimapMotionFrame: number | undefined;
 let progressScrubbing = false;
 let activePanel: ReaderPanel | null = null;
@@ -1145,17 +964,31 @@ let importInProgress = false;
 let importProgressTimer: number | undefined;
 let libraryIdleTimer: number | undefined;
 let libraryReturnInProgress = false;
+let openImportOnLibraryEntry = false;
 let landingSceneIndex = initialLandingSceneIndex;
 let landingSceneRevision = 0;
 let lastOpenedBookId = localStorage.getItem(LAST_BOOK_KEY) ?? '';
 let appearance = { ...defaultAppearance };
-let readingProgress: Record<string, number> = {};
+let readingProgress: ReaderProgress = {};
 let readerPins: ReaderPins = {};
 let stopThinkingOrb: () => void = () => undefined;
 const pendingRemovals = new Map<string, ImportedBookMetadata>();
 const loadedBookCache = new Map<string, Book>();
 const MAX_LOADED_BOOK_CACHE_ENTRIES = 3;
 const LIBRARY_IDLE_RETURN_MS = 30 * 1000;
+
+const cacheLoadedBook = (book: Book) => {
+  loadedBookCache.delete(book.id);
+  loadedBookCache.set(book.id, book);
+  while (loadedBookCache.size > MAX_LOADED_BOOK_CACHE_ENTRIES) {
+    const oldestId = loadedBookCache.keys().next().value as string | undefined;
+
+    if (!oldestId) {
+      return;
+    }
+    loadedBookCache.delete(oldestId);
+  }
+};
 
 const nextFrame = () =>
   new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -1164,6 +997,24 @@ const afterPaint = () =>
   new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   });
+
+const waitForAnimations = async (
+  animations: Animation[],
+  timeoutMs: number,
+) => {
+  let timeout: number | undefined;
+
+  // Electron may leave animation.finished pending while a window is throttled.
+  await Promise.race([
+    Promise.all(
+      animations.map((animation) => animation.finished.catch((): void => undefined)),
+    ),
+    new Promise<void>((resolve) => {
+      timeout = window.setTimeout(resolve, timeoutMs);
+    }),
+  ]);
+  window.clearTimeout(timeout);
+};
 
 const setLandingScene = (nextIndex: number) => {
   const scene = landingScenes[nextIndex];
@@ -1281,7 +1132,7 @@ const createMathElement = (source: string, displayMode: boolean) => {
   const element = document.createElement(displayMode ? 'div' : 'span');
 
   element.className = displayMode ? 'markdown-math-block' : 'markdown-math-inline';
-  katex.render(source, element, {
+  renderMath(source, element, {
     displayMode,
     errorColor: 'currentColor',
     maxExpand: 1_000,
@@ -1364,10 +1215,9 @@ const appendInlineContent = (
     return;
   }
 
-  const paragraphOffset = segment.startOffset - segment.paragraphStartOffset;
   appendInlineRuns(
     target,
-    sliceInlineRuns(inlines, paragraphOffset, segment.text.length),
+    sliceInlineRuns(inlines, 0, segment.text.length),
   );
 };
 
@@ -1407,9 +1257,6 @@ const createMarkdownTable = (
       row.append(cell);
     });
     (format.header ? head : body).append(row);
-    if (segment.continued) {
-      row.classList.add('is-continued');
-    }
   });
   if (head.children.length) {
     table.append(head);
@@ -1457,7 +1304,6 @@ const createMarkdownListGroup = (entries: MarkdownListEntry[]) => {
         const item = document.createElement('li');
 
         item.dataset.textOffset = String(segment.startOffset);
-        item.classList.toggle('is-continued', Boolean(segment.continued));
         if (ordered) {
           item.value = format.ordinal;
         }
@@ -1684,9 +1530,11 @@ const readAppearance = (): ReaderAppearance => {
   try {
     const currentRaw = localStorage.getItem(APPEARANCE_KEY);
     const previousRaw = localStorage.getItem(PREVIOUS_APPEARANCE_KEY);
+    const olderRaw = localStorage.getItem(OLDER_APPEARANCE_KEY);
     const stored = JSON.parse(
       currentRaw
         ?? previousRaw
+        ?? olderRaw
         ?? localStorage.getItem(LEGACY_APPEARANCE_KEY)
         ?? '{}',
     ) as StoredReaderAppearance;
@@ -1695,7 +1543,7 @@ const readAppearance = (): ReaderAppearance => {
       : stored.font === 'sans'
         ? 'PingFang SC'
         : defaultAppearance.fontFamily;
-    const fontSize = !currentRaw && previousRaw && stored.fontSize === 18
+    const fontSize = !currentRaw && !previousRaw && olderRaw && stored.fontSize === 18
       ? defaultAppearance.fontSize
       : typeof stored.fontSize === 'number'
       && Number.isFinite(stored.fontSize)
@@ -1712,12 +1560,15 @@ const readAppearance = (): ReaderAppearance => {
         : defaultAppearance.lineHeight;
     const foreground = normalizeHexColor(stored.foreground)
       ?? defaultAppearance.foreground;
+    const background = normalizeHexColor(stored.background)
+      ?? defaultAppearance.background;
 
     const nextAppearance = {
       fontFamily,
       fontSize,
       lineHeight,
       foreground,
+      background,
     };
 
     if (currentRaw !== JSON.stringify(nextAppearance)) {
@@ -1731,18 +1582,51 @@ const readAppearance = (): ReaderAppearance => {
 
 const readProgress = () => {
   try {
-    const stored = JSON.parse(localStorage.getItem(PROGRESS_KEY) ?? '{}') as unknown;
+    const currentRaw = localStorage.getItem(PROGRESS_KEY);
+    const stored = JSON.parse(
+      currentRaw ?? localStorage.getItem(LEGACY_PROGRESS_KEY) ?? '{}',
+    ) as unknown;
 
     if (!stored || typeof stored !== 'object' || Array.isArray(stored)) {
       return {};
     }
 
-    return Object.fromEntries(
-      Object.entries(stored)
-        .filter((entry): entry is [string, number] => (
-          typeof entry[1] === 'number' && Number.isFinite(entry[1]) && entry[1] >= 0
-        )),
-    );
+    const progress: ReaderProgress = {};
+
+    Object.entries(stored).forEach(([bookId, value]) => {
+      if (
+        !currentRaw
+        && typeof value === 'number'
+        && Number.isFinite(value)
+        && value >= 0
+      ) {
+        progress[bookId] = value <= 1 ? { ratio: value } : { anchor: value };
+        return;
+      }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return;
+      }
+      const candidate = value as Record<string, unknown>;
+
+      if (
+        typeof candidate.anchor === 'number'
+        && Number.isFinite(candidate.anchor)
+        && candidate.anchor >= 0
+      ) {
+        progress[bookId] = { anchor: candidate.anchor };
+      } else if (
+        typeof candidate.ratio === 'number'
+        && Number.isFinite(candidate.ratio)
+        && candidate.ratio >= 0
+        && candidate.ratio <= 1
+      ) {
+        progress[bookId] = { ratio: candidate.ratio };
+      }
+    });
+    if (!currentRaw && Object.keys(progress).length) {
+      localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress));
+    }
+    return progress;
   } catch {
     return {};
   }
@@ -1750,29 +1634,63 @@ const readProgress = () => {
 
 const readPins = (): ReaderPins => {
   try {
-    const stored = JSON.parse(localStorage.getItem(PINS_KEY) ?? '{}') as unknown;
+    const currentRaw = localStorage.getItem(PINS_KEY);
+    const stored = JSON.parse(
+      currentRaw ?? localStorage.getItem(LEGACY_PINS_KEY) ?? '{}',
+    ) as unknown;
 
     if (!stored || typeof stored !== 'object' || Array.isArray(stored)) {
       return {};
     }
 
-    return Object.fromEntries(
-      Object.entries(stored)
-        .filter((entry): entry is [string, number] => (
-          typeof entry[1] === 'number'
-          && Number.isFinite(entry[1])
-          && entry[1] >= 0
-          && entry[1] <= 1
-        )),
-    );
+    const pins: ReaderPins = {};
+
+    Object.entries(stored).forEach(([bookId, value]) => {
+      if (
+        !currentRaw
+        && typeof value === 'number'
+        && Number.isFinite(value)
+        && value >= 0
+        && value <= 1
+      ) {
+        pins[bookId] = { ratio: value };
+        return;
+      }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        return;
+      }
+      const candidate = value as Record<string, unknown>;
+      if (
+        typeof candidate.anchor === 'number'
+        && Number.isFinite(candidate.anchor)
+        && candidate.anchor >= 0
+      ) {
+        pins[bookId] = { anchor: candidate.anchor };
+        return;
+      }
+      if (
+        typeof candidate.ratio === 'number'
+        && Number.isFinite(candidate.ratio)
+        && candidate.ratio >= 0
+        && candidate.ratio <= 1
+      ) {
+        pins[bookId] = { ratio: candidate.ratio };
+      }
+    });
+
+    if (!currentRaw && Object.keys(pins).length) {
+      localStorage.setItem(PINS_KEY, JSON.stringify(pins));
+    }
+    return pins;
   } catch {
     return {};
   }
 };
 
-const updateFontColorPreview = () => {
-  const preview = queryRequired<HTMLElement>('[data-color-preview="foreground"]');
-  const value = foregroundInput.value.trim();
+const updateColorPreview = (name: 'foreground' | 'background') => {
+  const preview = queryRequired<HTMLElement>(`[data-color-preview="${name}"]`);
+  const input = name === 'foreground' ? foregroundInput : backgroundInput;
+  const value = input.value.trim();
   const normalized = normalizeHexColor(value);
 
   preview.style.backgroundColor = normalized ?? 'transparent';
@@ -1784,7 +1702,9 @@ const updateAppearanceControls = () => {
   fontSizeInput.value = String(appearance.fontSize);
   lineHeightInput.value = String(appearance.lineHeight);
   foregroundInput.value = appearance.foreground.toUpperCase();
-  updateFontColorPreview();
+  backgroundInput.value = appearance.background.toUpperCase();
+  updateColorPreview('foreground');
+  updateColorPreview('background');
 };
 
 const applyAppearance = (
@@ -1802,6 +1722,7 @@ const applyAppearance = (
   shell.style.setProperty('--reader-font-size', `${appearance.fontSize}px`);
   readerView.style.setProperty('--reader-line-height', String(appearance.lineHeight));
   readerView.style.setProperty('--reader-ink', appearance.foreground);
+  readerView.style.setProperty('--reader-paper-background', appearance.background);
   if (syncControls) {
     updateAppearanceControls();
   }
@@ -1825,6 +1746,7 @@ const readAppearanceForm = (): ReaderAppearance | null => {
   const fontSize = Number(fontSizeInput.value);
   const lineHeight = Number(lineHeightInput.value);
   const foreground = normalizeHexColor(foregroundInput.value);
+  const background = normalizeHexColor(backgroundInput.value);
   const validFont = isFontFamily(fontFamily);
   const validSize = Number.isFinite(fontSize)
     && Number.isInteger(fontSize)
@@ -1834,26 +1756,16 @@ const readAppearanceForm = (): ReaderAppearance | null => {
     && lineHeight >= MIN_LINE_HEIGHT
     && lineHeight <= MAX_LINE_HEIGHT;
   const validForeground = Boolean(foreground);
+  const validBackground = Boolean(background);
 
   fontFamilyInput.setAttribute('aria-invalid', String(!validFont));
   fontSizeInput.setAttribute('aria-invalid', String(!validSize));
   lineHeightInput.setAttribute('aria-invalid', String(!validLineHeight));
   foregroundInput.setAttribute('aria-invalid', String(!validForeground));
+  backgroundInput.setAttribute('aria-invalid', String(!validBackground));
 
-  if (!validFont) {
-    appearanceMessage.textContent = '请输入有效的字体名称';
-  } else if (!validSize) {
-    appearanceMessage.textContent = `字号需在 ${MIN_FONT_SIZE}–${MAX_FONT_SIZE} px`;
-  } else if (!validLineHeight) {
-    appearanceMessage.textContent = `行距需在 ${MIN_LINE_HEIGHT}–${MAX_LINE_HEIGHT}`;
-  } else if (!validForeground) {
-    appearanceMessage.textContent = '字体颜色请使用 #RGB 或 #RRGGBB';
-  } else {
-    appearanceMessage.textContent = '';
-  }
-
-  return validFont && validSize && validLineHeight && foreground
-    ? { fontFamily, fontSize, lineHeight, foreground }
+  return validFont && validSize && validLineHeight && foreground && background
+    ? { fontFamily, fontSize, lineHeight, foreground, background }
     : null;
 };
 
@@ -1862,7 +1774,6 @@ const resetAppearanceFormState = () => {
   settingsOptions.querySelectorAll('input').forEach((input) => {
     input.removeAttribute('aria-invalid');
   });
-  appearanceMessage.textContent = '';
 };
 
 const getScrollRange = () => Math.max(
@@ -1943,19 +1854,66 @@ const scrollToAnchor = (
   });
 };
 
-const getCurrentAnchor = () => {
+const getAnchorAtScrollTop = (scrollTop: number) => {
   const range = getScrollRange();
 
   if (range === 0) {
+    return readingDocument.startOffset;
+  }
+  if (scrollTop >= range - 1) {
     return readingDocument.endOffset;
   }
-  if (range > 0 && readerSurface.scrollTop >= range - 1) {
-    return readingDocument.endOffset;
-  }
-  const readingLine = readerSurface.scrollTop
+  const readingLine = Math.max(0, scrollTop)
     + Math.min(48, readerSurface.clientHeight * 0.08);
 
   return findLayoutPoint(readingLine, 'top')?.anchor ?? readingDocument.startOffset;
+};
+
+const getCurrentAnchor = () => getAnchorAtScrollTop(readerSurface.scrollTop);
+
+const resolveReaderLocation = (location: ReaderLocation) => {
+  if ('anchor' in location) {
+    return Math.max(
+      readingDocument.startOffset,
+      Math.min(readingDocument.endOffset, location.anchor),
+    );
+  }
+  return getAnchorAtScrollTop(getScrollRange() * location.ratio);
+};
+
+const persistReadingProgress = () => {
+  localStorage.setItem(PROGRESS_KEY, JSON.stringify(readingProgress));
+};
+
+const persistReaderPins = () => {
+  localStorage.setItem(PINS_KEY, JSON.stringify(readerPins));
+};
+
+const getPinnedAnchor = () => {
+  const pin = readerPins[activeBook.id];
+
+  if (!pin) {
+    return undefined;
+  }
+  if ('ratio' in pin && !readingLayoutPoints.length) {
+    return undefined;
+  }
+
+  const anchor = resolveReaderLocation(pin);
+
+  if ('ratio' in pin) {
+    readerPins[activeBook.id] = { anchor };
+    persistReaderPins();
+  }
+  return anchor;
+};
+
+const getAnchorProgressRatio = (anchor: number) => {
+  const range = getScrollRange();
+
+  return range > 0
+    ? getAnchorScrollTop(anchor) / range
+    : anchor / Math.max(readingDocument.endOffset, 1);
 };
 
 const getBookLength = (book: Book) => getBookParagraphs(book)
@@ -2023,9 +1981,10 @@ const updateMinimapBars = (ratio: number) => {
 };
 
 const renderProgressBookmarks = () => {
-  const pinnedRatio = readerPins[activeBook.id];
-  const markers = typeof pinnedRatio === 'number' ? [pinnedRatio].map((ratio) => {
+  const pinnedAnchor = getPinnedAnchor();
+  const markers = typeof pinnedAnchor === 'number' ? [pinnedAnchor].map((anchor) => {
     const marker = document.createElement('button');
+    const ratio = getAnchorProgressRatio(anchor);
     const position = ratio * 100;
 
     marker.className = 'reader-progress-bookmark';
@@ -2035,10 +1994,7 @@ const renderProgressBookmarks = () => {
     marker.style.setProperty('--bookmark-position', `${position.toFixed(3)}%`);
     marker.setAttribute('aria-label', `跳到 Pin，约 ${Math.round(position)}%`);
     marker.addEventListener('click', () => {
-      readerSurface.scrollTo({
-        top: getScrollRange() * ratio,
-        behavior: reducedMotion.matches ? 'auto' : 'smooth',
-      });
+      scrollToAnchor(anchor);
       setReaderControls(true);
     });
     return marker;
@@ -2051,11 +2007,11 @@ function updateReaderNavigation() {
   const scrollRange = getScrollRange();
   const ratio = scrollRange > 0
     ? readerSurface.scrollTop / scrollRange
-    : readingDocument.endOffset > 0 ? 1 : 0;
+    : 0;
   const percent = ratio * 100;
-  const pinnedRatio = readerPins[activeBook.id];
-  const pinnedHere = typeof pinnedRatio === 'number'
-    && Math.abs(pinnedRatio - ratio) <= 0.005;
+  const pinnedAnchor = getPinnedAnchor();
+  const currentAnchor = getCurrentAnchor();
+  const pinnedHere = pinnedAnchor === currentAnchor;
 
   readerTitle.textContent = activeBook.title;
   progressSlider.min = '0';
@@ -2073,8 +2029,8 @@ function updateReaderNavigation() {
   );
   setSegmentedProgress(readerProgress, progressPercent, percent);
   updateMinimapBars(ratio);
-  bookmarkButton.setAttribute('aria-pressed', String(typeof pinnedRatio === 'number'));
-  const bookmarkLabel = typeof pinnedRatio !== 'number'
+  bookmarkButton.setAttribute('aria-pressed', String(typeof pinnedAnchor === 'number'));
+  const bookmarkLabel = typeof pinnedAnchor !== 'number'
     ? '固定当前阅读位置'
     : pinnedHere ? '移除阅读标记' : '更新固定位置';
 
@@ -2095,7 +2051,7 @@ const scheduleReaderControlsHide = () => {
 
   controlsTimer = window.setTimeout(() => {
     readerView.dataset.controls = 'quiet';
-  }, 180);
+  }, 1_800);
 };
 
 const setReaderControls = (visible: boolean) => {
@@ -2116,7 +2072,9 @@ const setReaderControls = (visible: boolean) => {
 };
 
 const getBookChapters = (book: Book) => (
-  book.imported ? book.chapters ?? [] : builtInChapters
+  book.imported
+    ? book.chapters ?? []
+    : [{ title: book.title, level: 1, paragraphIndex: 0 }]
 );
 
 const getChapterEntries = (book: Book) => {
@@ -2138,6 +2096,39 @@ const getChapterEntries = (book: Book) => {
       anchor,
     }];
   });
+};
+
+const renderReaderContents = () => {
+  const chapters = getChapterEntries(activeBook);
+
+  if (!chapters.length) {
+    const empty = document.createElement('p');
+
+    empty.className = 'reader-panel-empty';
+    empty.textContent = '这本书没有可识别的章节目录';
+    contentsList.replaceChildren(empty);
+    return;
+  }
+
+  contentsList.replaceChildren(...chapters.map((chapter) => {
+    const button = document.createElement('button');
+    const title = document.createElement('strong');
+    const position = document.createElement('span');
+
+    button.type = 'button';
+    button.className = 'reader-panel-item';
+    button.dataset.level = String(chapter.level);
+    title.textContent = chapter.title;
+    position.textContent = `${Math.round(getAnchorProgressRatio(chapter.anchor) * 100)}%`;
+    button.append(title, position);
+    button.addEventListener('click', () => {
+      scrollToAnchor(chapter.anchor);
+      setReaderPanel(null, { restoreFocus: false });
+      readerSurface.focus({ preventScroll: true });
+      setReaderControls(true);
+    });
+    return button;
+  }));
 };
 
 const setReaderPanel = (
@@ -2169,32 +2160,39 @@ const setReaderPanel = (
 
   setReaderControls(true);
   readerPanel.dataset.panel = panel;
-  readerPanel.setAttribute('aria-label', '阅读显示');
-  readerAppearanceMount.append(settingsOptions);
-  resetAppearanceFormState();
-  requestAnimationFrame(() => {
-    fontFamilyInput.focus();
-  });
+  readerPanel.setAttribute('aria-label', panel === 'contents' ? '书籍目录' : '阅读显示');
+  if (panel === 'contents') {
+    renderReaderContents();
+    requestAnimationFrame(() => {
+      contentsList.querySelector<HTMLElement>('button')?.focus();
+    });
+  } else {
+    readerAppearanceMount.append(settingsOptions);
+    resetAppearanceFormState();
+    requestAnimationFrame(() => {
+      fontFamilyInput.focus();
+    });
+  }
 };
 
 const toggleBookmark = () => {
-  const range = getScrollRange();
-  const ratio = range > 0 ? readerSurface.scrollTop / range : 0;
-  const pinnedRatio = readerPins[activeBook.id];
-  const pinnedHere = typeof pinnedRatio === 'number'
-    && Math.abs(pinnedRatio - ratio) <= 0.005;
+  const anchor = getCurrentAnchor();
+  const pinnedAnchor = getPinnedAnchor();
+  const pinnedHere = pinnedAnchor === anchor;
 
   if (pinnedHere) {
     delete readerPins[activeBook.id];
   } else {
-    readerPins[activeBook.id] = ratio;
+    readerPins[activeBook.id] = { anchor };
   }
-  localStorage.setItem(PINS_KEY, JSON.stringify(readerPins));
+  persistReaderPins();
   updateReaderNavigation();
   renderProgressBookmarks();
 };
 
-const getBookParagraphs = (book: Book) => book.paragraphs ?? paragraphStream;
+const getBookParagraphs = (book: Book) => book.paragraphs
+  ?? sampleParagraphs.get(book.id)
+  ?? [];
 
 const createReadingPage = (
   book: Book,
@@ -2203,7 +2201,6 @@ const createReadingPage = (
   const firstSegment = segments[0];
   const lastSegment = segments.at(-1);
   const page: ReadingPage = {
-    runningTitle: book.title,
     paragraphs: segments.map((segment) => segment.text),
     segments: [...segments],
     formats: book.formats ?? [],
@@ -2218,13 +2215,13 @@ const createReadingPage = (
 };
 
 const saveCurrentProgress = () => {
-  readingProgress[activeBook.id] = getCurrentAnchor();
-  localStorage.setItem(PROGRESS_KEY, JSON.stringify(readingProgress));
+  readingProgress[activeBook.id] = { anchor: getCurrentAnchor() };
+  persistReadingProgress();
 };
 
 const prepareReadingDocument = async (
   book: Book,
-  anchor: number,
+  location: ReaderLocation,
 ) => {
   readingDocumentPreparing = true;
   bookCopy.setAttribute('aria-busy', 'true');
@@ -2240,8 +2237,13 @@ const prepareReadingDocument = async (
     await afterPaint();
     refreshReadingLayout();
     renderReaderMinimapBars();
+    const anchor = resolveReaderLocation(location);
+
+    if ('ratio' in location) {
+      readingProgress[book.id] = { anchor };
+      persistReadingProgress();
+    }
     scrollToAnchor(anchor, 'auto');
-    saveCurrentProgress();
     readerStatus.textContent = `已打开《${book.title}》`;
     return true;
   } catch {
@@ -2255,12 +2257,28 @@ const prepareReadingDocument = async (
   }
 };
 
-const announceStatus = (message: string) => {
-  appStatus.textContent = '';
+const announceStatus = (
+  message: string,
+  options: { tone?: 'neutral' | 'error'; persistent?: boolean } = {},
+) => {
+  window.clearTimeout(appStatusTimer);
+  appStatusMessage.textContent = '';
+  appStatus.hidden = false;
+  appStatus.dataset.tone = options.tone ?? 'neutral';
   requestAnimationFrame(() => {
-    appStatus.textContent = message;
+    appStatusMessage.textContent = message;
   });
+  if (!options.persistent) {
+    appStatusTimer = window.setTimeout(() => {
+      appStatus.hidden = true;
+    }, 4_500);
+  }
 };
+
+appStatusDismiss.addEventListener('click', () => {
+  window.clearTimeout(appStatusTimer);
+  appStatus.hidden = true;
+});
 
 const PAGE_TURN_VOLUME = 0.18;
 
@@ -2283,6 +2301,24 @@ const pageTurnAudio: Record<Direction, HTMLAudioElement[]> = {
   ],
 };
 const allPageTurnAudio = Object.values(pageTurnAudio).flat();
+
+const updatePageSoundButton = () => {
+  const label = pageSoundEnabled ? '关闭开书声音' : '打开开书声音';
+
+  soundButton.setAttribute('aria-pressed', String(pageSoundEnabled));
+  soundButton.setAttribute('aria-label', label);
+  soundButton.title = label;
+};
+
+const togglePageSound = () => {
+  pageSoundEnabled = !pageSoundEnabled;
+  localStorage.setItem(PAGE_SOUND_KEY, String(pageSoundEnabled));
+  if (!pageSoundEnabled && activePageSound && !activePageSound.paused) {
+    fadeOutPageTurnAudio(activePageSound);
+  }
+  updatePageSoundButton();
+  announceStatus(pageSoundEnabled ? '已打开开书声音' : '已关闭开书声音');
+};
 
 const resetPageTurnAudio = (audio: HTMLAudioElement) => {
   audio.pause();
@@ -2315,6 +2351,9 @@ const fadeOutPageTurnAudio = (audio: HTMLAudioElement, duration = 36) => {
 };
 
 const primeAudio = () => {
+  if (!pageSoundEnabled) {
+    return;
+  }
   allPageTurnAudio.forEach((audio) => {
     if (audio.readyState === HTMLMediaElement.HAVE_NOTHING) {
       audio.load();
@@ -2323,6 +2362,9 @@ const primeAudio = () => {
 };
 
 const playPageSound = (direction: Direction) => {
+  if (!pageSoundEnabled) {
+    return;
+  }
   primeAudio();
   if (activePageSound && !activePageSound.paused) {
     fadeOutPageTurnAudio(activePageSound);
@@ -2450,10 +2492,10 @@ const returnToLanding = async () => {
   setMode('landing');
   stopThinkingOrb();
   stopThinkingOrb = createThinkingOrb(thinkingOrbCanvas, reducedMotion);
-  await Promise.all([
-    libraryAnimation.finished.catch((): void => undefined),
-    landingAnimation.finished.catch((): void => undefined),
-  ]);
+  await waitForAnimations(
+    [libraryAnimation, landingAnimation],
+    duration + 240,
+  );
   libraryAnimation.cancel();
   landingAnimation.cancel();
   libraryReturnInProgress = false;
@@ -2483,6 +2525,11 @@ const enterLibrary = () => {
     ));
 
     (activeCategoryButton ?? libraryCategoryButtons[0])?.focus({ preventScroll: true });
+    if (openImportOnLibraryEntry) {
+      openImportOnLibraryEntry = false;
+      setLibraryPanel('import', { invoker: libraryImportButton });
+      importInput.click();
+    }
   }, duration);
 };
 
@@ -2595,8 +2642,8 @@ const openBook = async (
   activeTrigger = trigger;
   setMode('opening');
   announceStatus('正在载入正文…');
-  const anchor = readingProgress[book.id] ?? 0;
-  const documentPromise = prepareReadingDocument(book, anchor);
+  const location = readingProgress[book.id] ?? { anchor: 0 };
+  const documentPromise = prepareReadingDocument(book, location);
   prepareTransitionBook(book);
   const frame = positionTransitionBook();
   const start = transitionAlreadyCentered
@@ -2710,7 +2757,7 @@ const openBook = async (
   activeAnimations = animations;
   const [ready] = await Promise.all([
     documentPromise,
-    ...animations.map((animation) => animation.finished.catch((): void => undefined)),
+    waitForAnimations(animations, duration + 240),
   ]);
   activeAnimations = [];
 
@@ -2719,7 +2766,7 @@ const openBook = async (
     transitionBook.classList.remove('is-visible');
     if (shell.dataset.mode === 'opening') {
       setMode('library');
-      announceStatus('暂时无法打开这本书');
+      announceStatus('暂时无法打开这本书', { tone: 'error', persistent: true });
     }
     return shell.dataset.mode === 'library' ? 'failed' : 'cancelled';
   }
@@ -2728,9 +2775,11 @@ const openBook = async (
   animations.forEach((animation) => animation.cancel());
   transitionBook.classList.remove('is-visible');
   await afterPaint();
-  scrollToAnchor(anchor, 'auto');
+  scrollToAnchor(resolveReaderLocation(readingProgress[book.id] ?? location), 'auto');
+  saveCurrentProgress();
   updateReaderNavigation();
   readerStatus.textContent = `已打开《${book.title}》`;
+  announceStatus(`已打开《${book.title}》`);
   lastOpenedBookId = book.id;
   localStorage.setItem(LAST_BOOK_KEY, book.id);
   updateCurrentBookEntry();
@@ -2914,8 +2963,7 @@ const closeBook = async () => {
   const animations = [bookAnimation, coverAnimation, readerAnimation, libraryAnimation];
 
   activeAnimations = animations;
-  await Promise.all(animations.map((animation) =>
-    animation.finished.catch((): void => undefined)));
+  await waitForAnimations(animations, duration + 240);
   activeAnimations = [];
   setMode('library');
   animations.forEach((animation) => animation.cancel());
@@ -2933,7 +2981,6 @@ const toBookMetadata = (book: ImportedBookRecord): ImportedBookMetadata => ({
   author: book.author,
   color: book.color,
   ...(book.cover ? { cover: book.cover } : {}),
-  chapterTitle: book.chapterTitle,
   ...(book.sourceName ? { sourceName: book.sourceName } : {}),
   sourceFormat: book.sourceFormat,
   imported: true,
@@ -2972,9 +3019,13 @@ const replaceRemovedBookReference = (removedBookId: string) => {
   }
 };
 
-const hasBookProgress = (bookId: string) => (
-  Object.prototype.hasOwnProperty.call(readingProgress, bookId)
-);
+const hasBookProgress = (bookId: string) => {
+  const location = readingProgress[bookId];
+
+  return location
+    ? ('anchor' in location ? location.anchor : location.ratio) > 0
+    : false;
+};
 
 const matchesLibraryCategory = (
   book: Book,
@@ -2996,6 +3047,14 @@ const getCategoryBooks = (category: LibraryCategory = activeLibraryCategory) => 
 
 const persistFinishedBooks = () => {
   localStorage.setItem(FINISHED_BOOKS_KEY, JSON.stringify([...finishedBookIds]));
+};
+
+const clearStoredBookState = (bookId: string) => {
+  finishedBookIds.delete(bookId);
+  loadedBookCache.delete(bookId);
+  delete readingProgress[bookId];
+  delete readerPins[bookId];
+  replaceRemovedBookReference(bookId);
 };
 
 const toggleBookFinished = (book: Book) => {
@@ -3285,7 +3344,7 @@ const animateBookToCenter = async (
   );
 
   activeAnimations = [animation];
-  await animation.finished.catch((): void => undefined);
+  await waitForAnimations([animation], 860);
   activeAnimations = [];
   animation.cancel();
   return requestRevision === openRequestRevision && mode === 'library';
@@ -3319,18 +3378,9 @@ const openBookSummary = async (book: Book, trigger: HTMLButtonElement) => {
 
       readableBook = cachedBook ?? await loadImportedBook(book.id);
       if (cachedBook) {
-        loadedBookCache.delete(book.id);
-        loadedBookCache.set(book.id, cachedBook);
+        cacheLoadedBook(cachedBook);
       } else {
-        loadedBookCache.set(book.id, readableBook);
-        while (loadedBookCache.size > MAX_LOADED_BOOK_CACHE_ENTRIES) {
-          const oldestId = loadedBookCache.keys().next().value as string | undefined;
-
-          if (!oldestId) {
-            break;
-          }
-          loadedBookCache.delete(oldestId);
-        }
+        cacheLoadedBook(readableBook);
       }
     }
 
@@ -3358,7 +3408,7 @@ const openBookSummary = async (book: Book, trigger: HTMLButtonElement) => {
     }
     const message = error instanceof Error ? error.message : '暂时无法打开这本书';
 
-    announceStatus(message);
+    announceStatus(message, { tone: 'error', persistent: true });
   } finally {
     if (requestRevision === openRequestRevision) {
       loadingBookId = null;
@@ -3388,23 +3438,16 @@ const commitPendingRemovals = async () => {
 
     if (result.status === 'fulfilled') {
       deletedIds.add(bookId);
-      finishedBookIds.delete(bookId);
-      loadedBookCache.delete(bookId);
-      delete readingProgress[bookId];
-      delete readerPins[bookId];
+      clearStoredBookState(bookId);
     } else {
       failedBooks.push(metadata);
     }
   });
 
   if (deletedIds.size) {
-    localStorage.setItem(PROGRESS_KEY, JSON.stringify(readingProgress));
-    localStorage.setItem(PINS_KEY, JSON.stringify(readerPins));
+    persistReadingProgress();
+    persistReaderPins();
     persistFinishedBooks();
-    if (deletedIds.has(lastOpenedBookId)) {
-      lastOpenedBookId = '';
-      localStorage.removeItem(LAST_BOOK_KEY);
-    }
   }
 
   if (failedBooks.length) {
@@ -3415,7 +3458,10 @@ const commitPendingRemovals = async () => {
         importedBooks.push(book);
       }
     });
-    announceStatus('有书籍未能移出，已放回书架');
+    announceStatus('有书籍未能移出，已放回书架', {
+      tone: 'error',
+      persistent: true,
+    });
   }
   renderLibrarySearch();
   updateCurrentBookEntry();
@@ -3433,7 +3479,6 @@ const removeImportedBook = (bookId: string) => {
   }
   pendingRemovals.set(bookId, metadata);
   importedBooks = importedBooks.filter((book) => book.id !== bookId);
-  replaceRemovedBookReference(bookId);
   renderLibrarySearch();
   updateCurrentBookEntry();
   void commitPendingRemovals();
@@ -3445,14 +3490,12 @@ const removeSampleBook = (bookId: string) => {
   if (!book || hiddenSampleBookIds.has(bookId)) {
     return;
   }
-  const wasFinished = finishedBookIds.delete(bookId);
-
   hiddenSampleBookIds.add(bookId);
   localStorage.setItem(HIDDEN_SAMPLE_BOOKS_KEY, JSON.stringify([...hiddenSampleBookIds]));
-  if (wasFinished) {
-    persistFinishedBooks();
-  }
-  replaceRemovedBookReference(bookId);
+  clearStoredBookState(bookId);
+  persistReadingProgress();
+  persistReaderPins();
+  persistFinishedBooks();
   renderLibrarySearch();
   updateCurrentBookEntry();
   announceStatus(`已移出《${book.title}》`);
@@ -3478,31 +3521,16 @@ type ImportedBookMatch = {
   replacement?: ImportedBookMetadata;
 };
 
-const comparableImportedText = (paragraphs: readonly string[]) => paragraphs
-  .join('')
-  .normalize('NFKC')
-  .replace(/[^\p{L}\p{N}]+/gu, '');
-
-const likelySameImportedContent = (
+const sameImportedContent = (
   existing: Book,
   incoming: ImportedBookRecord,
-) => {
-  const left = comparableImportedText(existing.paragraphs ?? []);
-  const right = comparableImportedText(incoming.paragraphs);
-  const [shorter, longer] = left.length <= right.length ? [left, right] : [right, left];
-
-  if (shorter === longer) {
-    return true;
-  }
-  if (shorter.length < 64 || shorter.length / longer.length < 0.35) {
-    return false;
-  }
-
-  const anchorLength = Math.min(128, shorter.length);
-
-  return longer.includes(shorter.slice(0, anchorLength))
-    && longer.includes(shorter.slice(-anchorLength));
-};
+) => existing.paragraphs?.length === incoming.paragraphs.length
+  && existing.paragraphs.every((paragraph, index) => (
+    paragraph === incoming.paragraphs[index]
+  ))
+  && JSON.stringify(existing.chapters ?? []) === JSON.stringify(incoming.chapters)
+  && JSON.stringify(existing.formats ?? []) === JSON.stringify(incoming.formats)
+  && existing.sourceFormat === incoming.sourceFormat;
 
 const matchImportedBook = async (record: ImportedBookRecord): Promise<ImportedBookMatch> => {
   const identityCandidates = importedBooks.filter((book) => (
@@ -3516,8 +3544,10 @@ const matchImportedBook = async (record: ImportedBookRecord): Promise<ImportedBo
         && (!book.sourceFormat || book.sourceFormat === record.sourceFormat)
       ))
     : [];
+  const idCandidates = importedBooks.filter((book) => book.id === record.id);
   const candidates = [...new Map(
-    [...sourceCandidates, ...identityCandidates].map((book) => [book.id, book]),
+    [...idCandidates, ...sourceCandidates, ...identityCandidates]
+      .map((book) => [book.id, book]),
   ).values()];
   const replacements: ImportedBookMetadata[] = [];
 
@@ -3526,40 +3556,23 @@ const matchImportedBook = async (record: ImportedBookRecord): Promise<ImportedBo
       const existing = loadedBookCache.get(candidate.id)
         ?? await loadImportedBook(candidate.id);
 
-      if (
-        existing.paragraphs?.length === record.paragraphs.length
-        && existing.paragraphs.every((paragraph, index) => (
-          paragraph === record.paragraphs[index]
-        ))
-        && JSON.stringify(existing.chapters ?? []) === JSON.stringify(record.chapters)
-        && JSON.stringify(existing.formats ?? []) === JSON.stringify(record.formats)
-        && existing.cover === record.cover
-        && existing.sourceFormat === record.sourceFormat
-      ) {
-        return { duplicate: true };
-      }
-      if (likelySameImportedContent(existing, record)) {
+      if (sameImportedContent(existing, record)) {
+        if (
+          existing.title === record.title
+          && existing.author === record.author
+          && existing.cover === record.cover
+        ) {
+          return { duplicate: true };
+        }
         replacements.push(candidate);
       }
     } catch {
       // 损坏记录不应阻止用户重新导入一份可读副本。
     }
   }
-  const legacyCandidates = candidates.filter((book) => !book.sourceName);
-  const fallbackReplacement = sourceCandidates.length === 1
-    ? sourceCandidates[0]
-    : candidates.length === 1 && legacyCandidates.length === 1
-      ? legacyCandidates[0]
-      : undefined;
-
   return {
     duplicate: false,
-    ...(
-      replacements.length === 1
-      || fallbackReplacement
-        ? { replacement: replacements[0] ?? fallbackReplacement }
-        : {}
-    ),
+    ...(replacements.length === 1 ? { replacement: replacements[0] } : {}),
   };
 };
 
@@ -3584,6 +3597,8 @@ const importFiles = async (files: File[]) => {
   setLibraryPhase('browsing');
   libraryImportButton.disabled = true;
   setSegmentedProgress(importProgress, importPercent, 0);
+  importErrors.replaceChildren();
+  importErrors.hidden = true;
   importProgress.setAttribute('aria-valuenow', '0');
   importStatus.textContent = files.length === 1 ? files[0].name : `${files.length} 本书`;
 
@@ -3623,17 +3638,8 @@ const importFiles = async (files: File[]) => {
         updatedCount += 1;
       }
       updateProgress(fileIndex, 0.84, '放上书架');
-      await saveImportedBook(savedRecord);
-      loadedBookCache.delete(savedRecord.id);
-      loadedBookCache.set(savedRecord.id, savedRecord);
-      while (loadedBookCache.size > MAX_LOADED_BOOK_CACHE_ENTRIES) {
-        const oldestId = loadedBookCache.keys().next().value as string | undefined;
-
-        if (!oldestId) {
-          break;
-        }
-        loadedBookCache.delete(oldestId);
-      }
+      await saveImportedBook(savedRecord, Boolean(match.replacement));
+      cacheLoadedBook(savedRecord);
       const metadata = toBookMetadata(savedRecord);
       const existingIndex = importedBooks.findIndex((book) => book.id === savedRecord.id);
 
@@ -3661,19 +3667,31 @@ const importFiles = async (files: File[]) => {
   setSegmentedProgress(importProgress, importPercent, 100);
   importProgress.setAttribute('aria-valuenow', '100');
   importProgress.setAttribute('aria-valuetext', '导入完成');
-  importStatus.textContent = failures.length ? '部分完成' : '完成';
+  importStatus.textContent = failures.length
+    ? `${importedCount} 本成功，${failures.length} 本失败`
+    : '完成';
+  importErrors.replaceChildren(...failures.map((failure) => {
+    const item = document.createElement('li');
+
+    item.textContent = failure;
+    return item;
+  }));
+  importErrors.hidden = failures.length === 0;
   importInProgress = false;
   setLibraryPhase('browsing');
   libraryImportButton.disabled = false;
-  importProgressTimer = window.setTimeout(() => {
-    if (activeLibraryPanel === 'import') {
-      setLibraryPanel(null, { restoreFocus: false });
-    }
-  }, 1200);
+  if (!failures.length) {
+    importProgressTimer = window.setTimeout(() => {
+      if (activeLibraryPanel === 'import') {
+        setLibraryPanel(null, { restoreFocus: false });
+      }
+    }, 1_200);
+  }
 
   if (failures.length) {
     announceStatus(
       `导入 ${importedCount} 本，${failures.length} 本失败。${failures[0]}`,
+      { tone: 'error', persistent: true },
     );
   } else if (importedCount && duplicateCount) {
     announceStatus(`已导入 ${importedCount} 本，跳过 ${duplicateCount} 本重复书籍`);
@@ -3788,6 +3806,13 @@ returnButton.addEventListener('click', () => {
   void closeBook();
 });
 bookmarkButton.addEventListener('click', toggleBookmark);
+contentsButton.addEventListener('click', () => {
+  setReaderPanel(
+    activePanel === 'contents' ? null : 'contents',
+    { invoker: contentsButton },
+  );
+});
+soundButton.addEventListener('click', togglePageSound);
 readerProgress.addEventListener('pointermove', (event) => {
   window.cancelAnimationFrame(minimapMotionFrame ?? 0);
   const pointerY = event.clientY;
@@ -3884,8 +3909,11 @@ readerSurface.addEventListener('scroll', () => {
   scrollProgressFrame = requestAnimationFrame(() => {
     scrollProgressFrame = undefined;
     updateReaderNavigation();
+    readingProgress[activeBook.id] = { anchor: getCurrentAnchor() };
     window.clearTimeout(scrollProgressSaveTimer);
-    scrollProgressSaveTimer = window.setTimeout(saveCurrentProgress, 180);
+    scrollProgressSaveTimer = window.setTimeout(() => {
+      persistReadingProgress();
+    }, 180);
   });
 }, { passive: true });
 readerControlSurfaces.forEach((surface) => {
@@ -3897,6 +3925,9 @@ readerControlSurfaces.forEach((surface) => {
       scheduleReaderControlsHide();
     }
   }));
+});
+readerView.addEventListener('pointermove', () => setReaderControls(true), {
+  passive: true,
 });
 
 const changeFontSize = (step: number) => {
@@ -3921,7 +3952,6 @@ settingsOptions.addEventListener('submit', (event) => {
     return;
   }
   applyAppearance(nextAppearance);
-  appearanceMessage.textContent = '已应用';
 });
 
 settingsOptions.addEventListener('input', (event) => {
@@ -3929,10 +3959,9 @@ settingsOptions.addEventListener('input', (event) => {
     return;
   }
   event.target.removeAttribute('aria-invalid');
-  appearanceMessage.textContent = '';
-  if (event.target === foregroundInput) {
+  if (event.target === foregroundInput || event.target === backgroundInput) {
     event.target.value = event.target.value.toUpperCase();
-    updateFontColorPreview();
+    updateColorPreview(event.target === foregroundInput ? 'foreground' : 'background');
   }
 
   const appearancePanelOpen = (
@@ -3963,12 +3992,6 @@ settingsOptions.addEventListener('change', () => {
     return;
   }
   applyAppearance(nextAppearance);
-});
-
-appearanceResetButton.addEventListener('click', () => {
-  applyAppearance({ ...defaultAppearance });
-  resetAppearanceFormState();
-  appearanceMessage.textContent = '已恢复默认';
 });
 
 document.addEventListener('pointerdown', (event) => {
@@ -4010,8 +4033,18 @@ const handleReaderCommand = (command: ReaderCommand) => {
   if (command === 'open-book') {
     if (mode === 'library') {
       importInput.click();
+    } else if (mode === 'landing') {
+      openImportOnLibraryEntry = true;
+      enterLibrary();
+    } else if (mode === 'reading') {
+      void closeBook().then(() => {
+        if (mode === 'library') {
+          setLibraryPanel('import', { invoker: libraryImportButton });
+          importInput.click();
+        }
+      });
     } else {
-      announceStatus('请先返回书架，再导入书籍');
+      announceStatus('当前操作完成后即可导入书籍');
     }
     return;
   }
@@ -4024,11 +4057,15 @@ const handleReaderCommand = (command: ReaderCommand) => {
   if (command === 'toggle-bookmark') {
     toggleBookmark();
   } else if (command === 'show-contents') {
-    progressSlider.focus({ preventScroll: true });
+    setReaderPanel(
+      activePanel === 'contents' ? null : 'contents',
+      { invoker: readerSurface },
+    );
   } else if (command === 'toggle-reader-controls') {
-    if (readerMinimap.contains(document.activeElement)) {
-      readerSurface.focus({ preventScroll: true });
-    } else {
+    const show = readerView.dataset.controls === 'quiet';
+
+    setReaderControls(show);
+    if (show) {
       progressSlider.focus({ preventScroll: true });
     }
   }
@@ -4036,6 +4073,10 @@ const handleReaderCommand = (command: ReaderCommand) => {
 
 const unsubscribeReaderCommands = window.yuguang?.onReaderCommand(handleReaderCommand);
 window.addEventListener('beforeunload', () => {
+  if (mode === 'reading' || mode === 'opening') {
+    window.clearTimeout(scrollProgressSaveTimer);
+    saveCurrentProgress();
+  }
   unsubscribeReaderCommands?.();
   clearLibraryIdleTimer();
   stopThinkingOrb();
@@ -4121,6 +4162,10 @@ window.addEventListener('keydown', (event) => {
     event.preventDefault();
     openRequestRevision += 1;
     loadingBookId = null;
+    activeAnimations.forEach((animation) => animation.cancel());
+    activeAnimations = [];
+    transitionBook.classList.remove('is-visible');
+    setLibraryPhase('browsing');
     announceStatus('已取消打开');
     return;
   }
@@ -4156,8 +4201,11 @@ const handleLayoutGeometryChange = () => {
   if (mode !== 'reading' && mode !== 'opening') {
     return;
   }
+  const anchor = getCurrentAnchor();
+
   requestAnimationFrame(() => {
     refreshReadingLayout();
+    scrollToAnchor(anchor, 'auto');
     renderReaderMinimapBars();
     updateReaderNavigation();
     renderProgressBookmarks();
@@ -4171,6 +4219,7 @@ window.addEventListener('resize', handleLayoutGeometryChange);
 appearance = readAppearance();
 readingProgress = readProgress();
 readerPins = readPins();
+updatePageSoundButton();
 applyAppearance(appearance, false);
 setReaderPanel(null, { restoreFocus: false });
 setLibraryPanel(null, { restoreFocus: false });
@@ -4188,4 +4237,7 @@ void loadImportedBookMetadata()
     renderLibrarySearch();
     updateCurrentBookEntry();
   })
-  .catch(() => announceStatus('本地书库暂时无法读取'));
+  .catch(() => announceStatus('本地书库暂时无法读取', {
+    tone: 'error',
+    persistent: true,
+  }));

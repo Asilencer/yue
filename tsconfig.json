@@ -1,15 +1,14 @@
 {
   "compilerOptions": {
     "target": "ESNext",
-    "module": "commonjs",
-    "allowJs": true,
+    "module": "ESNext",
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "noImplicitAny": true,
+    "strict": true,
     "sourceMap": true,
     "baseUrl": ".",
     "outDir": "dist",
-    "moduleResolution": "node",
+    "moduleResolution": "Bundler",
     "resolveJsonModule": true
   }
 }

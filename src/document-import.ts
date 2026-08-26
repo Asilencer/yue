@@ -1,4 +1,4 @@
-import { unzipSync, type Unzipped } from 'fflate';
+import { unzip, unzipSync, type Unzipped } from 'fflate';
 
 type ImportedDocumentBase = {
   title?: string;
@@ -16,6 +16,12 @@ export type ReadDocumentOptions = {
 
 const COVER_MAX_WIDTH = 720;
 const COVER_MAX_HEIGHT = 1_024;
+const MAX_EPUB_FILE_SIZE = 128 * 1024 * 1024;
+const MAX_EPUB_ENTRY_COUNT = 10_000;
+const MAX_EXTRACTED_ENTRY_SIZE = 24 * 1024 * 1024;
+const MAX_EXTRACTED_TOTAL_SIZE = 192 * 1024 * 1024;
+const MAX_MARKUP_SIZE = 8 * 1024 * 1024;
+const MAX_COMPRESSION_RATIO = 200;
 
 const extensionOf = (name: string) => name.split('.').pop()?.toLowerCase() ?? '';
 
@@ -113,6 +119,9 @@ const declaredMarkupEncoding = (bytes: Uint8Array) => {
 };
 
 const decodeMarkup = (bytes: Uint8Array) => {
+  if (bytes.byteLength > MAX_MARKUP_SIZE) {
+    throw new Error('EPUB 单个正文或描述文件过大');
+  }
   const encoding = declaredMarkupEncoding(bytes);
 
   if (encoding) {
@@ -203,10 +212,15 @@ const contentReferencePaths = (basePath: string, reference: string) => {
   return [...new Set([decodedPath, rawPath])];
 };
 
-type EpubArchive = Set<string>;
+type EpubArchiveEntry = {
+  compressedSize: number;
+  originalSize: number;
+};
+
+type EpubArchive = Map<string, EpubArchiveEntry>;
 
 const inspectEpubArchive = (bytes: Uint8Array): EpubArchive => {
-  const archive: EpubArchive = new Set();
+  const archive: EpubArchive = new Map();
 
   if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
     throw new Error('文件不是有效的 EPUB 压缩包');
@@ -216,7 +230,9 @@ const inspectEpubArchive = (bytes: Uint8Array): EpubArchive => {
     unzipSync(bytes, {
       filter: (entry) => {
         if (
-          !Number.isSafeInteger(entry.originalSize)
+          !Number.isSafeInteger(entry.size)
+          || entry.size < 0
+          || !Number.isSafeInteger(entry.originalSize)
           || entry.originalSize < 0
         ) {
           throw new Error('EPUB 包含无效的文件大小');
@@ -226,7 +242,13 @@ const inspectEpubArchive = (bytes: Uint8Array): EpubArchive => {
         if (archive.has(path)) {
           throw new Error('EPUB 包含重复的文件路径');
         }
-        archive.add(path);
+        archive.set(path, {
+          compressedSize: entry.size,
+          originalSize: entry.originalSize,
+        });
+        if (archive.size > MAX_EPUB_ENTRY_COUNT) {
+          throw new Error('EPUB 包含过多文件条目');
+        }
         return false;
       },
     });
@@ -253,33 +275,98 @@ const resolveContentEntry = (
   return matches[0] ?? candidates[0];
 };
 
-const extractEpubEntries = (
+const resolveOptionalContentEntry = (
+  archive: EpubArchive,
+  basePath: string,
+  reference: string,
+) => {
+  const referencePath = reference.split(/[?#]/, 1)[0];
+
+  if (
+    !referencePath
+    || referencePath.startsWith('//')
+    || /^[a-z][a-z0-9+.-]*:/i.test(referencePath)
+  ) {
+    return undefined;
+  }
+
+  try {
+    const path = resolveContentEntry(archive, basePath, reference);
+
+    return archive.has(path) ? path : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const extractEpubEntries = async (
   bytes: Uint8Array,
   archive: EpubArchive,
   requestedPaths: Set<string>,
 ) => {
+  let totalSize = 0;
+
   requestedPaths.forEach((path) => {
-    if (!archive.has(path)) {
+    const entry = archive.get(path);
+
+    if (!entry) {
       throw new Error(`EPUB 缺少文件：${path}`);
+    }
+    if (entry.originalSize > MAX_EXTRACTED_ENTRY_SIZE) {
+      throw new Error(`EPUB 文件过大：${path}`);
+    }
+    if (
+      entry.originalSize > 0
+      && (
+        entry.compressedSize === 0
+        || entry.originalSize / entry.compressedSize > MAX_COMPRESSION_RATIO
+      )
+    ) {
+      throw new Error(`EPUB 文件压缩比异常：${path}`);
+    }
+    totalSize += entry.originalSize;
+  });
+  if (totalSize > MAX_EXTRACTED_TOTAL_SIZE) {
+    throw new Error('EPUB 需要解压的内容过大');
+  }
+
+  const extracted = await new Promise<Unzipped>((resolve, reject) => {
+    try {
+      unzip(
+        bytes,
+        { filter: (entry) => requestedPaths.has(zipEntryPath(entry.name)) },
+        (error, result) => {
+          if (error) {
+            reject(new Error('EPUB 正文已损坏或使用了不支持的压缩方式'));
+          } else {
+            resolve(result);
+          }
+        },
+      );
+    } catch (error) {
+      reject(
+        error instanceof Error && error.message.startsWith('EPUB')
+          ? error
+          : new Error('EPUB 正文已损坏或使用了不支持的压缩方式'),
+      );
     }
   });
 
-  let extracted: Unzipped;
-
-  try {
-    extracted = unzipSync(bytes, {
-      filter: (entry) => requestedPaths.has(zipEntryPath(entry.name)),
-    });
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('EPUB')) {
-      throw error;
-    }
-    throw new Error('EPUB 正文已损坏或使用了不支持的压缩方式');
-  }
-
   const entries = new Map<string, Uint8Array>();
+  let extractedSize = 0;
+
   Object.entries(extracted).forEach(([path, data]) => {
-    entries.set(zipEntryPath(path), data);
+    const normalizedPath = zipEntryPath(path);
+    const declaredSize = archive.get(normalizedPath)?.originalSize;
+
+    if (declaredSize !== data.byteLength) {
+      throw new Error(`EPUB 文件大小与目录不一致：${normalizedPath}`);
+    }
+    extractedSize += data.byteLength;
+    if (extractedSize > MAX_EXTRACTED_TOTAL_SIZE) {
+      throw new Error('EPUB 解压后的内容过大');
+    }
+    entries.set(normalizedPath, data);
   });
   requestedPaths.forEach((path) => {
     if (!entries.has(path)) {
@@ -370,6 +457,160 @@ const markdownCodeSpan = (value: string) => {
   return `${fence}${padding}${value}${padding}${fence}`;
 };
 
+const mathOperatorTex = new Map([
+  ['−', '-'],
+  ['×', '\\times '],
+  ['÷', '\\div '],
+  ['·', '\\cdot '],
+  ['≤', '\\le '],
+  ['≥', '\\ge '],
+  ['≠', '\\ne '],
+  ['≈', '\\approx '],
+  ['∞', '\\infty '],
+  ['∑', '\\sum '],
+  ['∏', '\\prod '],
+  ['∫', '\\int '],
+  ['∂', '\\partial '],
+  ['√', '\\sqrt{}'],
+  ['→', '\\to '],
+  ['←', '\\leftarrow '],
+  ['↔', '\\leftrightarrow '],
+  ['∈', '\\in '],
+  ['∉', '\\notin '],
+]);
+const ignoredInlineTags = new Set([
+  'script',
+  'style',
+  'svg',
+  'audio',
+  'video',
+  'form',
+  'rt',
+  'rp',
+]);
+const ignoredBlockTags = new Set([
+  'script',
+  'style',
+  'svg',
+  'audio',
+  'video',
+  'form',
+  'nav',
+]);
+
+const escapeTexText = (value: string) => value.replace(
+  /[#$%&_{}]/g,
+  (character) => `\\${character}`,
+);
+
+const mathMlToTex = (math: Element) => {
+  const annotation = localNameElements(math, 'annotation').find((item) => (
+    /tex$/i.test(item.getAttribute('encoding') ?? '')
+    || /latex/i.test(item.getAttribute('encoding') ?? '')
+  ));
+  const annotatedTex = cleanMetadata(annotation?.textContent);
+
+  if (annotatedTex) {
+    return annotatedTex;
+  }
+
+  const convert = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return node.textContent?.replace(/\s+/g, ' ') ?? '';
+    }
+    if (!(node instanceof Element)) {
+      return '';
+    }
+
+    const tag = node.localName.toLowerCase();
+    const children = Array.from(node.childNodes).map(convert);
+    const child = (index: number) => children[index]?.trim() ?? '';
+    const joined = children.join('').trim();
+
+    if (tag === 'annotation' || tag === 'annotation-xml') {
+      return '';
+    }
+    if (tag === 'math' || tag === 'mrow' || tag === 'mstyle' || tag === 'mpadded') {
+      return joined;
+    }
+    if (tag === 'semantics') {
+      const primary = Array.from(node.children).find((element) => (
+        !['annotation', 'annotation-xml'].includes(element.localName.toLowerCase())
+      ));
+
+      return primary ? convert(primary) : '';
+    }
+    if (tag === 'mi' || tag === 'mn') {
+      return escapeTexText(cleanMetadata(node.textContent));
+    }
+    if (tag === 'mo') {
+      const operator = cleanMetadata(node.textContent);
+
+      return mathOperatorTex.get(operator) ?? escapeTexText(operator);
+    }
+    if (tag === 'mtext' || tag === 'ms') {
+      return `\\text{${escapeTexText(cleanMetadata(node.textContent))}}`;
+    }
+    if (tag === 'mfrac') {
+      return `\\frac{${child(0)}}{${child(1)}}`;
+    }
+    if (tag === 'msqrt') {
+      return `\\sqrt{${joined}}`;
+    }
+    if (tag === 'mroot') {
+      return `\\sqrt[${child(1)}]{${child(0)}}`;
+    }
+    if (tag === 'msup') {
+      return `{${child(0)}}^{${child(1)}}`;
+    }
+    if (tag === 'msub') {
+      return `{${child(0)}}_{${child(1)}}`;
+    }
+    if (tag === 'msubsup') {
+      return `{${child(0)}}_{${child(1)}}^{${child(2)}}`;
+    }
+    if (tag === 'mover') {
+      return `\\overset{${child(1)}}{${child(0)}}`;
+    }
+    if (tag === 'munder') {
+      return `\\underset{${child(1)}}{${child(0)}}`;
+    }
+    if (tag === 'munderover') {
+      return `\\overset{${child(2)}}{\\underset{${child(1)}}{${child(0)}}}`;
+    }
+    if (tag === 'mfenced') {
+      const open = node.getAttribute('open') ?? '(';
+      const close = node.getAttribute('close') ?? ')';
+      const separators = node.getAttribute('separators') || ',';
+      const content = children.map((value, index) => (
+        index ? `${separators[Math.min(index - 1, separators.length - 1)]}${value}` : value
+      )).join('');
+
+      return `\\left${open}${content}\\right${close}`;
+    }
+    if (tag === 'mtable') {
+      const rows = Array.from(node.children)
+        .filter((row) => row.localName.toLowerCase() === 'mtr')
+        .map((row) => Array.from(row.children).map(convert).join(' & '));
+
+      return `\\begin{matrix}${rows.join(' \\\\ ')}\\end{matrix}`;
+    }
+    if (tag === 'mtr') {
+      return Array.from(node.children).map(convert).join(' & ');
+    }
+    if (tag === 'mtd') {
+      return joined;
+    }
+    if (tag === 'mspace') {
+      return '\\,';
+    }
+
+    return joined;
+  };
+
+  return convert(math).trim();
+};
+
 const markdownInlineText = (node: Node): string => {
   if (node.nodeType === Node.TEXT_NODE) {
     return escapeMarkdownText(node.textContent ?? '');
@@ -379,21 +620,16 @@ const markdownInlineText = (node: Node): string => {
   }
 
   const tag = node.localName.toLowerCase();
-  if (new Set([
-    'script',
-    'style',
-    'svg',
-    'math',
-    'audio',
-    'video',
-    'form',
-    'rt',
-    'rp',
-  ]).has(tag)) {
+  if (ignoredInlineTags.has(tag)) {
     return '';
   }
+  if (tag === 'math') {
+    const tex = mathMlToTex(node);
+
+    return tex ? `$${tex}$` : escapeMarkdownText(node.textContent ?? '');
+  }
   if (tag === 'br') {
-    return '\n';
+    return '<br>';
   }
   if (tag === 'img') {
     return escapeMarkdownText(node.getAttribute('alt') ?? '');
@@ -436,10 +672,13 @@ const escapeMarkdownText = (value: string) => Array.from(value, (character) => {
 }).join('');
 
 const markdownTable = (table: Element) => {
-  const rows = localNameElements(table, 'tr').map((row) => (
+  const rowElements = localNameElements(table, 'tr');
+  const rows = rowElements.map((row) => (
     Array.from(row.children)
       .filter((cell) => ['th', 'td'].includes(cell.localName.toLowerCase()))
-      .map((cell) => normalizeBlockText(markdownInlineText(cell)))
+      .map((cell) => normalizeBlockText(markdownInlineText(cell))
+        .replace(/\|/g, '\\|')
+        .replace(/\n/g, '<br>'))
   )).filter((row) => row.length);
 
   if (!rows.length) {
@@ -456,10 +695,15 @@ const markdownTable = (table: Element) => {
     return `| ${cells.slice(0, columnCount).join(' | ')} |`;
   };
 
+  const hasHeader = Array.from(rowElements[0]?.children ?? []).some((cell) => (
+    cell.localName.toLowerCase() === 'th'
+  ));
+  const header = hasHeader ? rows[0] : Array.from({ length: columnCount }, () => '');
+
   return [
-    normalizeRow(rows[0]),
+    normalizeRow(header),
     normalizeRow(Array.from({ length: columnCount }, () => '---')),
-    ...rows.slice(1).map(normalizeRow),
+    ...(hasHeader ? rows.slice(1) : rows).map(normalizeRow),
   ].join('\n');
 };
 
@@ -523,16 +767,15 @@ const htmlToMarkdown = (source: string) => {
       const element = node;
       const tag = element.localName.toLowerCase();
 
-      if (new Set([
-        'script',
-        'style',
-        'svg',
-        'math',
-        'audio',
-        'video',
-        'form',
-        'nav',
-      ]).has(tag)) {
+      if (ignoredBlockTags.has(tag)) {
+        return;
+      }
+      if (tag === 'math') {
+        const tex = mathMlToTex(element);
+
+        if (tex) {
+          blocks.push(`$$\n${tex}\n$$`);
+        }
         return;
       }
       if (/^h[1-6]$/.test(tag)) {
@@ -676,6 +919,7 @@ const findEpubCoverCandidate = (
 ) => {
   const propertyCover = [...manifest.values()].find((item) => (
     item.properties.split(/\s+/).includes('cover-image')
+    && archive.has(item.path)
   ));
   if (propertyCover) {
     return propertyCover;
@@ -684,15 +928,20 @@ const findEpubCoverCandidate = (
   const metadataCoverId = localNameElements(packageDocument, 'meta').find((item) => (
     item.getAttribute('name')?.toLowerCase() === 'cover'
   ))?.getAttribute('content');
-  if (metadataCoverId && manifest.has(metadataCoverId)) {
-    return manifest.get(metadataCoverId);
+  const metadataCover = metadataCoverId ? manifest.get(metadataCoverId) : undefined;
+  if (metadataCover && archive.has(metadataCover.path)) {
+    return metadataCover;
   }
 
   const guideReference = localNameElements(packageDocument, 'reference').find((item) => (
     item.getAttribute('type')?.toLowerCase().split(/\s+/).includes('cover')
   ))?.getAttribute('href');
   if (guideReference) {
-    const guidePath = resolveContentEntry(archive, packagePath, guideReference);
+    const guidePath = resolveOptionalContentEntry(
+      archive,
+      packagePath,
+      guideReference,
+    );
     const guideItem = [...manifest.values()].find((item) => item.path === guidePath);
 
     if (guideItem) {
@@ -702,6 +951,7 @@ const findEpubCoverCandidate = (
 
   return [...manifest.values()].find((item) => (
     isEpubImage(item)
+    && archive.has(item.path)
     && /(?:^|[/_.-])cover(?:[/_.-]|$)/i.test(`${item.id}/${item.path}`)
   ));
 };
@@ -739,7 +989,7 @@ const findEpubCoverImage = (
     const path = resolveContentEntry(archive, candidate.path, reference);
 
     return [...manifest.values()].find((item) => (
-      item.path === path && isEpubImage(item)
+      item.path === path && archive.has(path) && isEpubImage(item)
     ));
   } catch {
     return undefined;
@@ -754,18 +1004,30 @@ const readEpubCover = async (
   candidate: EpubManifestItem | undefined,
   encrypted: Set<string>,
 ) => {
-  const image = findEpubCoverImage(candidate, entries, manifest, archive);
-
-  if (!image || encrypted.has(image.path)) {
+  if (!candidate || encrypted.has(candidate.path)) {
     return undefined;
   }
-  const imageBytes = entries.get(image.path)
-    ?? extractEpubEntries(bytes, archive, new Set([image.path])).get(image.path);
+  try {
+    const candidateEntries = entries.has(candidate.path)
+      ? entries
+      : new Map([
+          ...entries,
+          ...await extractEpubEntries(bytes, archive, new Set([candidate.path])),
+        ]);
+    const image = findEpubCoverImage(candidate, candidateEntries, manifest, archive);
 
-  if (!imageBytes) {
+    if (!image || encrypted.has(image.path)) {
+      return undefined;
+    }
+    const imageBytes = candidateEntries.get(image.path)
+      ?? (await extractEpubEntries(bytes, archive, new Set([image.path]))).get(image.path);
+
+    return imageBytes
+      ? await imageBytesToCover(imageBytes, image.mediaType)
+      : undefined;
+  } catch {
     return undefined;
   }
-  return imageBytesToCover(imageBytes, image.mediaType).catch((): undefined => undefined);
 };
 
 const contentsLabelPattern = /^(?:目\s*录(?:页)?|目\s*次|contents|table\s+of\s+contents)$/iu;
@@ -887,26 +1149,41 @@ const readEpubNavigation = (
       ? parseXml(source, 'EPUB NCX 目录')
       : new DOMParser().parseFromString(source, 'text/html');
 
-    localNameElements(document, 'a').forEach((anchor) => {
+    const anchors = isNcx
+      ? []
+      : localNameElements(document, 'nav')
+        .filter((navigationElement) => {
+          const type = navigationElement.getAttribute('epub:type')
+            ?? navigationElement.getAttributeNS(
+              'http://www.idpf.org/2007/ops',
+              'type',
+            )
+            ?? '';
+
+          return type.toLowerCase().split(/\s+/).includes('toc');
+        })
+        .flatMap((navigationElement) => localNameElements(navigationElement, 'a'));
+
+    anchors.forEach((anchor) => {
       const href = anchor.getAttribute('href');
       const title = cleanMetadata(anchor.textContent);
+      const path = href
+        ? resolveOptionalContentEntry(archive, navigation.path, href)
+        : undefined;
 
-      if (href && title) {
-        titles.set(
-          resolveContentEntry(archive, navigation.path, href),
-          title,
-        );
+      if (path && title && !titles.has(path)) {
+        titles.set(path, title);
       }
     });
     localNameElements(document, 'navPoint').forEach((point) => {
       const href = localNameElements(point, 'content')[0]?.getAttribute('src');
       const title = cleanMetadata(localNameElements(point, 'navLabel')[0]?.textContent);
+      const path = href
+        ? resolveOptionalContentEntry(archive, navigation.path, href)
+        : undefined;
 
-      if (href && title) {
-        titles.set(
-          resolveContentEntry(archive, navigation.path, href),
-          title,
-        );
+      if (path && title && !titles.has(path)) {
+        titles.set(path, title);
       }
     });
   });
@@ -944,7 +1221,7 @@ const readEpub = async (
     'META-INF/container.xml',
     ...(encryptionPath ? [encryptionPath] : []),
   ]);
-  const bootstrapEntries = extractEpubEntries(bytes, archive, bootstrapPaths);
+  const bootstrapEntries = await extractEpubEntries(bytes, archive, bootstrapPaths);
 
   onProgress?.(0.18);
   if (decodeText(bootstrapEntries.get('mimetype') ?? new Uint8Array()).trim()
@@ -982,7 +1259,7 @@ const readEpub = async (
     throw new Error('暂不支持书籍包被加密的 EPUB');
   }
 
-  const packageEntries = extractEpubEntries(
+  const packageEntries = await extractEpubEntries(
     bytes,
     archive,
     new Set([packagePath]),
@@ -993,6 +1270,19 @@ const readEpub = async (
   }
 
   const packageDocument = parseXml(decodeMarkup(packageBytes), 'EPUB 书籍包');
+  const fixedLayout = localNameElements(packageDocument, 'meta').some((meta) => {
+    const property = meta.getAttribute('property')?.toLowerCase();
+    const name = meta.getAttribute('name')?.toLowerCase();
+    const value = cleanMetadata(
+      meta.getAttribute('content') ?? meta.textContent,
+    ).toLowerCase();
+
+    return property === 'rendition:layout' && value === 'pre-paginated'
+      || name === 'fixed-layout' && ['true', 'yes', 'pre-paginated'].includes(value);
+  });
+  if (fixedLayout) {
+    throw new Error('暂不支持固定版式 EPUB');
+  }
   const title = metadataText(packageDocument, 'title') || fileTitleOf(file.name);
   const author = metadataText(packageDocument, 'creator');
   const manifest = new Map<string, EpubManifestItem>();
@@ -1028,19 +1318,30 @@ const readEpub = async (
     throw new Error('EPUB 缺少正文阅读顺序');
   }
 
-  const spine = localNameElements(spineElement, 'itemref').map((item, index) => {
+  const spine = localNameElements(spineElement, 'itemref').flatMap((item, index) => {
+    if (item.getAttribute('linear')?.toLowerCase() === 'no') {
+      return [];
+    }
+    if (
+      (item.getAttribute('properties') ?? '')
+        .toLowerCase()
+        .split(/\s+/)
+        .includes('rendition:layout-pre-paginated')
+    ) {
+      throw new Error('暂不支持包含固定版式页面的 EPUB');
+    }
     const id = item.getAttribute('idref');
 
     if (!id) {
       throw new Error(`EPUB 第 ${index + 1} 个 spine 项缺少 idref`);
     }
-    return resolveManifestItem(
+    return [resolveManifestItem(
       manifest,
       archive,
       id,
       readableSpineMediaTypes,
       `第 ${index + 1} 个正文项`,
-    );
+    )];
   });
 
   if (!spine.length) {
@@ -1078,13 +1379,8 @@ const readEpub = async (
     packagePath,
     ...spine.map((item) => item.path),
     ...navigationItems.map((item) => item.path),
-    ...(
-      coverCandidate && !encrypted.has(coverCandidate.path)
-        ? [coverCandidate.path]
-        : []
-    ),
   ]);
-  const entries = extractEpubEntries(bytes, archive, requiredPaths);
+  const entries = await extractEpubEntries(bytes, archive, requiredPaths);
   const navigationTitles = readEpubNavigation(
     entries,
     navigationItems,
@@ -1114,12 +1410,14 @@ const readEpub = async (
       || looksLikeEpubAdvertisementDocument(chapterSource, item)
     ) {
       onProgress?.(0.2 + (index + 1) / spine.length * 0.75);
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
       continue;
     }
 
     const markdown = htmlToMarkdown(chapterSource);
     if (!markdown) {
       onProgress?.(0.2 + (index + 1) / spine.length * 0.75);
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
       continue;
     }
 
@@ -1130,6 +1428,7 @@ const readEpub = async (
       sections.push(markdown);
     }
     onProgress?.(0.2 + (index + 1) / spine.length * 0.75);
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
   }
 
   const source = sections.join('\n\n');
@@ -1154,6 +1453,9 @@ export const readDocumentFile = async (
 
   if (extension !== 'epub') {
     throw new Error('目前仅支持 EPUB');
+  }
+  if (file.size > MAX_EPUB_FILE_SIZE) {
+    throw new Error('EPUB 文件不能超过 128 MB');
   }
   options.onProgress?.(0);
   return readEpub(file, options.onProgress);
