@@ -11,7 +11,7 @@ const isReaderCommand = (value: unknown): value is ReaderCommand => (
   typeof value === 'string' && readerCommands.has(value as ReaderCommand)
 );
 
-contextBridge.exposeInMainWorld('yuguang', {
+contextBridge.exposeInMainWorld('yue', {
   onReaderCommand: (listener: (command: ReaderCommand) => void) => {
     const handler = (_event: IpcRendererEvent, command: unknown) => {
       if (isReaderCommand(command)) {

@@ -8,15 +8,13 @@ import path from 'node:path';
 import type { ReaderCommand } from './global';
 
 const APP_NAME = '阅';
-const LEGACY_USER_DATA_DIRECTORY = '余光';
 const READER_COMMAND_CHANNEL = 'reader-command';
 
-// 保留旧数据目录，避免改名后丢失已导入书籍和阅读进度。
+app.setName(APP_NAME);
 app.setPath(
   'userData',
-  path.join(app.getPath('appData'), LEGACY_USER_DATA_DIRECTORY),
+  path.join(app.getPath('appData'), APP_NAME),
 );
-app.setName(APP_NAME);
 app.enableSandbox();
 
 const installDevelopmentDockIcon = () => {

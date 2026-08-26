@@ -3329,34 +3329,65 @@ button {
   display: grid;
   place-content: center;
   justify-items: center;
-  gap: 10px;
-  color: var(--library-ink);
+  gap: max(10px, calc(var(--reader-font-size) * .6));
+  color: var(--reader-ink);
+  font-family: var(--reader-font);
+  font-size: var(--reader-font-size);
+  text-shadow:
+    0 1px 2px color-mix(in srgb, var(--reader-paper-background) 82%, transparent),
+    0 0 16px color-mix(in srgb, var(--reader-paper-background) 56%, transparent);
   pointer-events: none;
 }
 
-.library-empty strong {
-  font-family: var(--reader-font);
-  font-size: 14px;
+.library-empty > strong,
+.library-empty-import strong {
   font-weight: 500;
   letter-spacing: .06em;
 }
 
-.library-empty button {
-  min-height: 32px;
-  padding: 0 13px;
-  border: 1px solid var(--library-edge);
-  border-radius: 16px;
+.library-empty-import {
+  display: inline-flex;
+  align-items: center;
+  gap: .5em;
+  padding: 0;
+  border: 0;
   outline: 0;
-  color: var(--library-ink);
-  background: color-mix(in srgb, var(--library-ink) 10%, transparent);
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
-  font-size: 10px;
+  color: var(--reader-ink);
+  background: transparent;
   cursor: pointer;
   pointer-events: auto;
 }
 
-.library-empty button:focus-visible {
+.library-empty-import .reader-icon {
+  width: 1.1em;
+  height: 1.1em;
+  stroke-width: 1.6;
+}
+
+.library-empty-import:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--reader-ink) 58%, transparent);
+  outline-offset: 6px;
+}
+
+.library-empty-action {
+  min-height: max(36px, calc(var(--reader-font-size) * 2.2));
+  padding: 0 max(14px, calc(var(--reader-font-size) * .9));
+  border: 1px solid color-mix(in srgb, var(--reader-ink) 26%, transparent);
+  border-radius: max(18px, calc(var(--reader-font-size) * 1.1));
+  outline: 0;
+  color: var(--reader-ink);
+  background: color-mix(
+    in srgb,
+    var(--reader-paper-background) 72%,
+    transparent
+  );
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.library-empty-action:focus-visible {
   box-shadow: 0 0 0 2px rgba(255, 255, 255, .68);
 }
 
@@ -3459,12 +3490,8 @@ button {
 @supports not (
   (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))
 ) {
-  .library-empty button {
-    background: rgba(42, 55, 56, .9);
-  }
-
-  .library-view[data-ui-ink="dark"] .library-empty button {
-    background: rgba(241, 244, 240, .94);
+  .library-empty-action {
+    background: var(--reader-paper-background);
   }
 
   .library-book-card {
@@ -3474,17 +3501,10 @@ button {
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  .library-empty button {
+  .library-empty-action {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
-  }
-
-  .library-empty button {
-    background: rgba(42, 55, 56, .94);
-  }
-
-  .library-view[data-ui-ink="dark"] .library-empty button {
-    background: rgba(241, 244, 240, .96);
+    background: var(--reader-paper-background);
   }
 
   .library-book-card {

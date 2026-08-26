@@ -48,11 +48,6 @@ import {
   createTextSegments,
   type TextSegment,
 } from './text-segments';
-import {
-  sampleBooks,
-  sampleParagraphs,
-  type SampleBook,
-} from './sample-library';
 import { createThinkingOrb } from './thinking-orb';
 
 type AppMode = 'landing' | 'library' | 'opening' | 'reading' | 'closing';
@@ -61,7 +56,7 @@ type ReaderPanel = 'appearance';
 type LibraryPanel = 'search' | 'import' | 'background' | 'appearance';
 type LibraryCategory = 'all' | 'reading' | 'finished';
 type OpenBookResult = 'opened' | 'cancelled' | 'failed';
-type BookMaterial = NonNullable<SampleBook['material']>;
+type BookMaterial = 'cloth' | 'paper' | 'aged';
 
 const libraryCategoryLabels: Record<LibraryCategory, string> = {
   all: '全部',
@@ -88,7 +83,13 @@ type ReadingPage = SourcePage & {
   endOffset: number;
 };
 
-type Book = SampleBook & {
+type Book = {
+  id: string;
+  title: string;
+  author: string;
+  color: string;
+  material?: BookMaterial;
+  cover?: string;
   paragraphs?: string[];
   chapters?: ImportedBookChapter[];
   formats?: ImportedBookFormat[];
@@ -118,21 +119,7 @@ type PreparedBookOpening = {
   location: ReaderLocation;
 };
 
-const HIDDEN_SAMPLE_BOOKS_KEY = 'hiddenSampleBooks:v1';
 const FINISHED_BOOKS_KEY = 'finishedBooks:v1';
-const hiddenSampleBookIds = new Set<string>(
-  (() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(HIDDEN_SAMPLE_BOOKS_KEY) ?? '[]');
-
-      return Array.isArray(stored)
-        ? stored.filter((value): value is string => typeof value === 'string')
-        : [];
-    } catch {
-      return [];
-    }
-  })(),
-);
 const finishedBookIds = new Set<string>(
   (() => {
     try {
@@ -153,7 +140,7 @@ const landingScenes = [
     id: 'mountain',
     label: '清晨山野',
     src: landingImage,
-    landscapeSrcSet: `${landingImage} 1586w, ${landingMountainLandscapeHigh} 5120w`,
+    landscapeSrcSet: landingMountainLandscapeHigh,
     portraitSrcSet: `${landingMountainPortrait} 941w, ${landingMountainPortraitHigh} 2881w`,
     position: 'center 48%',
     ink: 'light',
@@ -162,8 +149,7 @@ const landingScenes = [
     id: 'coast',
     label: '午后海岸',
     src: landingCoastAfternoon,
-    landscapeSrcSet:
-      `${landingCoastAfternoon} 1586w, ${landingCoastAfternoonLandscapeHigh} 5120w`,
+    landscapeSrcSet: landingCoastAfternoonLandscapeHigh,
     portraitSrcSet:
       `${landingCoastAfternoonPortrait} 941w, ${landingCoastAfternoonPortraitHigh} 2881w`,
     position: 'center',
@@ -173,7 +159,7 @@ const landingScenes = [
     id: 'city-dusk',
     label: '黄昏都市',
     src: landingCityDusk,
-    landscapeSrcSet: `${landingCityDusk} 1586w, ${landingCityDuskLandscapeHigh} 5120w`,
+    landscapeSrcSet: landingCityDuskLandscapeHigh,
     portraitSrcSet: `${landingCityDuskPortrait} 941w, ${landingCityDuskPortraitHigh} 2881w`,
     position: 'center',
     ink: 'light',
@@ -182,8 +168,7 @@ const landingScenes = [
     id: 'city-morning',
     label: '清晨街景',
     src: landingCityMorning,
-    landscapeSrcSet:
-      `${landingCityMorning} 1586w, ${landingCityMorningLandscapeHigh} 5120w`,
+    landscapeSrcSet: landingCityMorningLandscapeHigh,
     portraitSrcSet:
       `${landingCityMorningPortrait} 941w, ${landingCityMorningPortraitHigh} 2881w`,
     position: 'center',
@@ -197,8 +182,6 @@ const initialLandingSceneIndex = Math.max(
   landingScenes.findIndex((scene) => scene.id === storedLandingScene),
 );
 const initialLandingScene = landingScenes[initialLandingSceneIndex] ?? landingScenes[0];
-
-const books: Book[] = sampleBooks;
 
 const emptyPage = (offset = 0): ReadingPage => ({
   paragraphs: [],
@@ -501,8 +484,22 @@ app.innerHTML = `
           aria-label="书架上的书"
         ></div>
         <div class="library-empty" data-library-empty hidden>
+          <button
+            class="library-empty-import"
+            type="button"
+            data-library-empty-import
+            aria-label="还没有书，导入书籍"
+            hidden
+          >
+            ${renderReaderIcon('libraryImport')}
+            <strong>还没有书</strong>
+          </button>
           <strong data-library-empty-title></strong>
-          <button type="button" data-library-empty-action></button>
+          <button
+            class="library-empty-action"
+            type="button"
+            data-library-empty-action
+          ></button>
         </div>
       </section>
 
@@ -872,6 +869,9 @@ const libraryReturnHomeButton = queryRequired<HTMLButtonElement>(
   '[data-library-return-home]',
 );
 const libraryEmpty = queryRequired<HTMLElement>('[data-library-empty]');
+const libraryEmptyImport = queryRequired<HTMLButtonElement>(
+  '[data-library-empty-import]',
+);
 const libraryEmptyTitle = queryRequired<HTMLElement>('[data-library-empty-title]');
 const libraryEmptyAction = queryRequired<HTMLButtonElement>('[data-library-empty-action]');
 const readerView = queryRequired<HTMLElement>('.reader-view');
@@ -969,7 +969,7 @@ const defaultAppearance: ReaderAppearance = {
 };
 
 let mode: AppMode = 'landing';
-let activeBook = books[0];
+let activeBook: Book;
 let activeTrigger: HTMLButtonElement | null = null;
 let activePageSound: HTMLAudioElement | null = null;
 const pageSoundEnabled = localStorage.getItem(PAGE_SOUND_KEY) !== 'false';
@@ -1796,6 +1796,8 @@ const applyAppearance = (
   shell.style.setProperty('--reader-font', fontFamily);
   shell.style.setProperty('--reader-ui-font', fontFamily);
   shell.style.setProperty('--reader-font-size', `${appearance.fontSize}px`);
+  shell.style.setProperty('--reader-ink', appearance.foreground);
+  shell.style.setProperty('--reader-paper-background', appearance.background);
   readerView.style.setProperty('--reader-line-height', String(appearance.lineHeight));
   readerView.style.setProperty('--reader-ink', appearance.foreground);
   readerView.style.setProperty('--reader-paper-background', appearance.background);
@@ -2236,9 +2238,7 @@ const toggleBookmark = () => {
   renderProgressBookmarks();
 };
 
-const getBookParagraphs = (book: Book) => book.paragraphs
-  ?? sampleParagraphs.get(book.id)
-  ?? [];
+const getBookParagraphs = (book: Book) => book.paragraphs ?? [];
 
 const createReadingPage = (
   book: Book,
@@ -2955,16 +2955,12 @@ const toBookMetadata = (book: ImportedBookRecord): ImportedBookMetadata => ({
 });
 
 const getBookSummaryById = (bookId: string): Book | undefined => (
-  books.find((book) => (
-    book.id === bookId && !hiddenSampleBookIds.has(book.id)
-  ))
-  ?? importedBooks.find((book) => book.id === bookId)
+  importedBooks.find((book) => book.id === bookId)
 );
 
-const getManagedBooks = (): Book[] => [
-  ...importedBooks.slice().sort((left, right) => right.createdAt - left.createdAt),
-  ...books.filter((book) => !hiddenSampleBookIds.has(book.id)),
-];
+const getManagedBooks = (): Book[] => importedBooks
+  .slice()
+  .sort((left, right) => right.createdAt - left.createdAt);
 
 const matchesLibraryQuery = (book: Book, query: string) => (
   !query
@@ -3108,13 +3104,7 @@ const createLibraryBookCard = (book: Book, query: string) => {
   card.append(openButton, actions);
   bindBookButton(openButton, book);
   finishedButton.addEventListener('click', () => toggleBookFinished(book));
-  removeButton.addEventListener('click', () => {
-    if (book.imported) {
-      removeImportedBook(book.id);
-    } else {
-      removeSampleBook(book.id);
-    }
-  });
+  removeButton.addEventListener('click', () => removeImportedBook(book.id));
   return card;
 };
 
@@ -3138,10 +3128,11 @@ const renderLibraryCards = (query: string) => {
   const emptyCategory = !query && categoryBooks.length === 0;
 
   libraryEmpty.hidden = !(allBooks.length === 0 || noSearchResults || emptyCategory);
+  libraryEmptyImport.hidden = allBooks.length !== 0;
+  libraryEmptyTitle.hidden = allBooks.length === 0;
+  libraryEmptyAction.hidden = allBooks.length === 0;
   if (allBooks.length === 0) {
-    libraryEmptyTitle.textContent = '还没有书';
-    libraryEmptyAction.textContent = '导入第一本书';
-    libraryEmptyAction.dataset.action = 'import';
+    delete libraryEmptyAction.dataset.action;
   } else if (noSearchResults) {
     libraryEmptyTitle.textContent = '没有找到';
     libraryEmptyAction.textContent = '清除搜索';
@@ -3465,23 +3456,6 @@ const removeImportedBook = (bookId: string) => {
   void commitPendingRemovals();
 };
 
-const removeSampleBook = (bookId: string) => {
-  const book = books.find((item) => item.id === bookId);
-
-  if (!book || hiddenSampleBookIds.has(bookId)) {
-    return;
-  }
-  hiddenSampleBookIds.add(bookId);
-  localStorage.setItem(HIDDEN_SAMPLE_BOOKS_KEY, JSON.stringify([...hiddenSampleBookIds]));
-  clearStoredBookState(bookId);
-  persistReadingProgress();
-  persistReaderPins();
-  persistFinishedBooks();
-  renderLibrarySearch();
-  updateCurrentBookEntry();
-  announceStatus(`已移出《${book.title}》`);
-};
-
 const updateCurrentBookEntry = () => {
   bookHotspots.querySelectorAll<HTMLButtonElement>('.library-book-card-open').forEach((button) => {
     const book = getBookSummaryById(button.dataset.bookId ?? '');
@@ -3718,9 +3692,7 @@ libraryCategoryButtons.forEach((button) => {
 libraryEmptyAction.addEventListener('click', () => {
   const action = libraryEmptyAction.dataset.action;
 
-  if (action === 'import') {
-    libraryImportButton.click();
-  } else if (action === 'clear-search') {
+  if (action === 'clear-search') {
     librarySearch.value = '';
     renderLibrarySearch();
     librarySearch.focus();
@@ -3730,6 +3702,7 @@ libraryEmptyAction.addEventListener('click', () => {
     libraryCategoryButtons[0]?.focus({ preventScroll: true });
   }
 });
+libraryEmptyImport.addEventListener('click', () => libraryImportButton.click());
 
 libraryActionButtons.forEach((button) => {
   button.addEventListener('click', () => {
@@ -4020,7 +3993,7 @@ const handleReaderCommand = (command: ReaderCommand) => {
   }
 };
 
-const unsubscribeReaderCommands = window.yuguang?.onReaderCommand(handleReaderCommand);
+const unsubscribeReaderCommands = window.yue?.onReaderCommand(handleReaderCommand);
 window.addEventListener('beforeunload', () => {
   if (mode === 'reading' || mode === 'opening') {
     window.clearTimeout(scrollProgressSaveTimer);

@@ -2,7 +2,7 @@ export type ReaderCommand =
   | 'open-book'
   | 'toggle-bookmark';
 
-export interface YuguangApi {
+export interface YueApi {
   onReaderCommand: (
     listener: (command: ReaderCommand) => void,
   ) => () => void;
@@ -10,6 +10,6 @@ export interface YuguangApi {
 
 declare global {
   interface Window {
-    yuguang: YuguangApi;
+    yue: YueApi;
   }
 }

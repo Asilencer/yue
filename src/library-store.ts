@@ -105,7 +105,7 @@ export type ParseImportedBookOptions = {
 
 export type ImportedSourceFormat = 'epub';
 
-const DATABASE_NAME = 'yuguang-library';
+const DATABASE_NAME = 'yue-library';
 const DATABASE_VERSION = 3;
 const METADATA_STORE_NAME = 'books';
 const CONTENT_STORE_NAME = 'bookContents';
