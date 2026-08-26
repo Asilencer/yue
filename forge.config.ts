@@ -12,6 +12,7 @@ const config: ForgeConfig = {
     osxSign: {
       identity: '-',
       identityValidation: false,
+      optionsForFile: () => ({ hardenedRuntime: false }),
     },
   },
   rebuildConfig: {},
