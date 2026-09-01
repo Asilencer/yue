@@ -64,13 +64,6 @@ const libraryCategoryLabels: Record<LibraryCategory, string> = {
   finished: '已读',
 };
 
-const libraryPanelLabels: Record<LibraryPanel, string> = {
-  search: '搜索书籍',
-  import: '导入书籍',
-  background: '背景图',
-  appearance: 'UI 配置',
-};
-
 type SourcePage = {
   paragraphs: string[];
   segments?: TextSegment[];
@@ -473,6 +466,16 @@ app.innerHTML = `
           <button data-library-category="finished" aria-pressed="false">
             已读 0 本
           </button>
+          <button
+            class="library-tools-bookmark"
+            type="button"
+            data-library-tools-toggle
+            aria-label="书架工具"
+            aria-expanded="false"
+            aria-controls="library-tool-options library-control-hub"
+          >
+            书架工具
+          </button>
         </nav>
       </aside>
 
@@ -518,112 +521,108 @@ app.innerHTML = `
         <small>仅支持 EPUB</small>
       </div>
 
-      <nav class="landing-dock library-dock config-dock" aria-label="书架工具">
-        <div class="library-dock-group" role="group" aria-label="书籍工具">
-          <button
-            class="landing-control-button config-button"
-            data-library-action="search"
-            aria-label="搜索书籍"
-            title="搜索书籍"
-            aria-expanded="false"
-            aria-controls="library-control-hub"
-          >${renderReaderIcon('librarySearch')}</button>
-          <button
-            class="landing-control-button config-button"
-            data-library-action="import"
-            aria-label="导入书籍"
-            title="导入书籍"
-            aria-expanded="false"
-            aria-controls="library-control-hub"
-          >${renderReaderIcon('libraryImport')}</button>
-          <button
-            class="landing-control-button config-button"
-            data-library-action="background"
-            aria-label="设置背景图"
-            title="设置背景图"
-            aria-expanded="false"
-            aria-controls="library-control-hub"
-          >${renderReaderIcon('libraryBackground')}</button>
-          <button
-            class="landing-control-button config-button"
-            data-library-action="appearance"
-            aria-label="UI 配置"
-            title="UI 配置"
-            aria-expanded="false"
-            aria-controls="library-control-hub"
-          >${renderReaderIcon('libraryAppearance')}</button>
-        </div>
-      </nav>
-
       <section
-        class="landing-hub library-hub config-panel"
+        class="landing-hub library-hub library-tools-card config-panel"
         id="library-control-hub"
         data-library-panel
+        data-open="false"
         aria-label="书架工具"
         aria-hidden="true"
         inert
       >
-        <div class="library-hub-view library-search-view" data-library-panel-view="search">
-          <label class="library-search-field">
-            ${renderReaderIcon('librarySearch')}
-            <span class="visually-hidden">搜索书名或作者</span>
-            <input
-              data-library-search
-              type="search"
-              placeholder="书名或作者"
-              autocomplete="off"
-            />
-            <span class="library-search-meta" data-library-search-meta aria-live="polite"></span>
-          </label>
-        </div>
-
-        <div class="library-hub-view library-import-view" data-library-panel-view="import">
-          <button class="library-import-entry" type="button" data-import-choose>
-            ${renderReaderIcon('libraryImport')}
-            <span>
-              <strong>导入书籍</strong>
-              <small>EPUB</small>
-            </span>
-          </button>
-          <div class="library-import-feedback" data-import-feedback hidden>
-            <div class="library-import-summary">
-              ${renderReaderIcon('libraryImport')}
-              <span data-import-status>正在导入</span>
-              <strong data-import-percent>0%</strong>
-            </div>
+        <div class="library-tools-grid">
+          <section
+            class="library-tool-section library-tool-search-section"
+            aria-label="搜索书籍"
+          >
             <div
-              class="segmented-progress library-import-progress"
-              data-import-progress
-              role="progressbar"
-              aria-label="导入书籍进度"
-              aria-valuemin="0"
-              aria-valuemax="100"
-              aria-valuenow="0"
-              style="--progress: 0%"
+              class="library-hub-view library-search-view"
+              data-library-panel-view="search"
             >
-              <span class="segmented-progress-track" aria-hidden="true">
-                <span class="segmented-progress-fill"></span>
-                <span class="segmented-progress-glow"></span>
-              </span>
+              <label class="library-search-field">
+                ${renderReaderIcon('librarySearch')}
+                <span class="visually-hidden">搜索书名或作者</span>
+                <input
+                  data-library-search
+                  type="search"
+                  placeholder="书名或作者"
+                  autocomplete="off"
+                />
+                <span
+                  class="library-search-meta"
+                  data-library-search-meta
+                  aria-live="polite"
+                ></span>
+              </label>
             </div>
-            <ul class="library-import-errors" data-import-errors hidden></ul>
-          </div>
-        </div>
+          </section>
 
-        <div
-          class="landing-hub-view library-background-view"
-          data-library-panel-view="background"
-        >
-          <div class="landing-scene-options">
-            ${renderBackgroundSceneButtons()}
-          </div>
-        </div>
+          <section
+            class="library-tool-section library-tool-import-section"
+            aria-label="导入书籍"
+          >
+            <div
+              class="library-hub-view library-import-view"
+              data-library-panel-view="import"
+            >
+              <button class="library-import-entry" type="button" data-import-choose>
+                ${renderReaderIcon('libraryImport')}
+                <span>
+                  <strong>选择书籍</strong>
+                  <small>EPUB</small>
+                </span>
+              </button>
+              <div class="library-import-feedback" data-import-feedback hidden>
+                <div class="library-import-summary">
+                  ${renderReaderIcon('libraryImport')}
+                  <span data-import-status>正在导入</span>
+                  <strong data-import-percent>0%</strong>
+                </div>
+                <div
+                  class="segmented-progress library-import-progress"
+                  data-import-progress
+                  role="progressbar"
+                  aria-label="导入书籍进度"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-valuenow="0"
+                  style="--progress: 0%"
+                >
+                  <span class="segmented-progress-track" aria-hidden="true">
+                    <span class="segmented-progress-fill"></span>
+                    <span class="segmented-progress-glow"></span>
+                  </span>
+                </div>
+                <ul class="library-import-errors" data-import-errors hidden></ul>
+              </div>
+            </div>
+          </section>
 
-        <div
-          class="library-hub-view library-appearance-view"
-          data-library-panel-view="appearance"
-          data-library-appearance-mount
-        ></div>
+          <section
+            class="library-tool-section library-tool-background-section"
+            aria-label="书架背景"
+          >
+            <div
+              class="landing-hub-view library-background-view"
+              data-library-panel-view="background"
+            >
+              <div class="landing-scene-options">
+                ${renderBackgroundSceneButtons()}
+              </div>
+            </div>
+          </section>
+
+          <section
+            class="library-tool-section library-tool-appearance-section"
+            aria-label="界面显示"
+          >
+            <div
+              class="library-hub-view library-appearance-view"
+              data-library-panel-view="appearance"
+              data-library-appearance-mount
+            ></div>
+          </section>
+        </div>
       </section>
 
     </section>
@@ -886,22 +885,10 @@ const readerOpeningCurtain = queryRequired<HTMLElement>('[data-reader-opening-cu
 const readerStatus = queryRequired<HTMLElement>('[data-reader-status]');
 const appStatus = queryRequired<HTMLElement>('[data-app-status]');
 const importInput = queryRequired<HTMLInputElement>('[data-import-input]');
-const libraryDock = queryRequired<HTMLElement>('.library-dock');
+const libraryToolsButton = queryRequired<HTMLButtonElement>('[data-library-tools-toggle]');
 const libraryPanel = queryRequired<HTMLElement>('[data-library-panel]');
 const librarySearch = queryRequired<HTMLInputElement>('[data-library-search]');
 const librarySearchMeta = queryRequired<HTMLElement>('[data-library-search-meta]');
-const libraryActionButtons = [
-  ...libraryView.querySelectorAll<HTMLButtonElement>('[data-library-action]'),
-];
-const libraryImportButton = queryRequired<HTMLButtonElement>(
-  '[data-library-action="import"]',
-);
-const librarySearchButton = queryRequired<HTMLButtonElement>(
-  '[data-library-action="search"]',
-);
-const libraryAppearanceButton = queryRequired<HTMLButtonElement>(
-  '[data-library-action="appearance"]',
-);
 const libraryAppearanceMount = queryRequired<HTMLElement>(
   '[data-library-appearance-mount]',
 );
@@ -990,8 +977,8 @@ let minimapMotionFrame: number | undefined;
 let progressScrubbing = false;
 let activePanel: ReaderPanel | null = null;
 let panelInvoker: HTMLElement | null = null;
-let activeLibraryPanel: LibraryPanel | null = null;
-let libraryPanelInvoker: HTMLElement | null = null;
+let libraryToolsOpen = false;
+let libraryPanelMotion: Animation | null = null;
 let matchedLibraryBooks: Book[] = [];
 let activeLibraryCategory: LibraryCategory = 'all';
 let libraryOpenInProgress = false;
@@ -2485,7 +2472,7 @@ const returnToLanding = async () => {
 
   libraryReturnInProgress = true;
   clearLibraryIdleTimer();
-  setLibraryPanel(null, { restoreFocus: false });
+  setLibraryToolsOpen(false, { restoreFocus: false });
   libraryView.classList.remove('is-dragging');
   const duration = reducedMotion.matches ? 90 : 260;
   const timing: KeyframeAnimationOptions = {
@@ -2540,7 +2527,7 @@ const enterLibrary = () => {
     (activeCategoryButton ?? libraryCategoryButtons[0])?.focus({ preventScroll: true });
     if (openImportOnLibraryEntry) {
       openImportOnLibraryEntry = false;
-      setLibraryPanel('import', { invoker: libraryImportButton });
+      setLibraryToolsOpen(true, { focus: 'import' });
       importInput.click();
     }
   }, duration);
@@ -3155,37 +3142,100 @@ const renderLibrarySearch = () => {
   renderLibraryCards(query);
 };
 
-const setLibraryPanel = (
-  panel: LibraryPanel | null,
-  options: { invoker?: HTMLElement; restoreFocus?: boolean } = {},
-) => {
-  const restoreTarget = libraryPanelInvoker?.isConnected
-    ? libraryPanelInvoker
-    : librarySearchButton;
-
-  if (!panel && options.restoreFocus !== false) {
-    restoreTarget.focus({ preventScroll: true });
-  }
-  if (panel && (options.invoker || !activeLibraryPanel)) {
-    libraryPanelInvoker = options.invoker
-      ?? libraryActionButtons.find((button) => button.dataset.libraryAction === panel)
-      ?? librarySearchButton;
+const animateLibraryToolsCard = () => {
+  if (reducedMotion.matches) {
+    return;
   }
 
-  activeLibraryPanel = panel;
-  libraryPanel.dataset.open = String(Boolean(panel));
-  libraryPanel.toggleAttribute('inert', !panel);
-  libraryPanel.setAttribute('aria-hidden', String(!panel));
-  libraryActionButtons.forEach((button) => {
-    button.setAttribute(
-      'aria-expanded',
-      String(button.dataset.libraryAction === panel),
-    );
+  libraryPanelMotion?.cancel();
+  const motion = libraryPanel.animate(
+    [
+      {
+        opacity: .62,
+        transform: 'translate(-50%, calc(-50% + 14px)) scale(.96, .92)',
+      },
+      {
+        offset: .62,
+        opacity: 1,
+        transform: 'translate(-50%, calc(-50% - 3px)) scale(1.012, 1.026)',
+      },
+      {
+        offset: .82,
+        transform: 'translate(-50%, -50%) scale(.996, .99)',
+      },
+      {
+        opacity: 1,
+        transform: 'translate(-50%, -50%) scale(1)',
+      },
+    ],
+    {
+      duration: 360,
+      easing: 'cubic-bezier(.18, .78, .2, 1)',
+    },
+  );
+
+  libraryPanelMotion = motion;
+  motion.addEventListener('finish', () => {
+    if (libraryPanelMotion === motion) {
+      libraryPanelMotion = null;
+    }
+  }, { once: true });
+};
+
+const focusLibraryToolsSection = (section: LibraryPanel) => {
+  let target: HTMLButtonElement | HTMLInputElement | undefined;
+
+  switch (section) {
+    case 'search':
+      target = librarySearch;
+      break;
+    case 'import':
+      target = importChooseButton;
+      break;
+    case 'background':
+      target = backgroundSceneButtons.find(
+        (button) => button.getAttribute('aria-pressed') === 'true',
+      ) ?? backgroundSceneButtons[0];
+      break;
+    case 'appearance':
+      target = fontFamilyInput;
+      break;
+  }
+
+  if (!target || target.disabled) {
+    return;
+  }
+
+  requestAnimationFrame(() => {
+    if (libraryToolsOpen) {
+      target.focus({ preventScroll: true });
+    }
   });
+};
 
-  if (!panel) {
-    delete libraryPanel.dataset.panel;
-    libraryPanelInvoker = null;
+const setLibraryToolsOpen = (
+  open: boolean,
+  options: {
+    autofocus?: boolean;
+    focus?: LibraryPanel;
+    restoreFocus?: boolean;
+  } = {},
+) => {
+  const wasOpen = libraryToolsOpen;
+
+  if (!open && options.restoreFocus !== false) {
+    libraryToolsButton.focus({ preventScroll: true });
+  }
+
+  libraryToolsOpen = open;
+  libraryToolsButton.setAttribute('aria-expanded', String(open));
+  libraryPanel.dataset.open = String(open);
+  libraryPanel.toggleAttribute('inert', !open);
+  libraryPanel.setAttribute('aria-hidden', String(!open));
+
+  if (!open) {
+    libraryPanelMotion?.cancel();
+    libraryPanelMotion = null;
     librarySearch.value = '';
     if (!importInProgress) {
       setImportPresentation(false);
@@ -3194,19 +3244,24 @@ const setLibraryPanel = (
     return;
   }
 
-  libraryPanel.dataset.panel = panel;
-  libraryPanel.setAttribute('aria-label', libraryPanelLabels[panel]);
-  if (panel === 'search') {
-    renderLibrarySearch();
-    requestAnimationFrame(() => librarySearch.focus());
-  } else if (panel === 'appearance') {
-    libraryAppearanceMount.append(settingsOptions);
-    resetAppearanceFormState();
-    requestAnimationFrame(() => fontFamilyInput.focus());
-  } else if (panel === 'import' && !importInProgress) {
+  renderLibrarySearch();
+  libraryAppearanceMount.append(settingsOptions);
+  resetAppearanceFormState();
+  if (!importInProgress) {
     window.clearTimeout(importProgressTimer);
     setImportPresentation(false);
-    requestAnimationFrame(() => importChooseButton.focus());
+  }
+
+  if (options.autofocus !== false) {
+    focusLibraryToolsSection(options.focus ?? 'search');
+  }
+
+  if (!wasOpen) {
+    requestAnimationFrame(() => {
+      if (libraryToolsOpen) {
+        animateLibraryToolsCard();
+      }
+    });
   }
 };
 
@@ -3217,7 +3272,6 @@ const setLibraryPhase = (phase: 'browsing' | 'placing') => {
   libraryView.dataset.phase = phase;
   libraryView.toggleAttribute('aria-busy', busy);
   bookHotspots.inert = busy;
-  libraryDock.inert = busy;
   if (busy) {
     clearLibraryIdleTimer();
   } else {
@@ -3325,7 +3379,7 @@ const openBookSummary = async (book: Book, trigger: HTMLButtonElement) => {
   loadingBookId = book.id;
   setLibraryPhase('placing');
   const flightPromise = animateBookToCenter(book, physicalTrigger, requestRevision);
-  setLibraryPanel(null, { restoreFocus: false });
+  setLibraryToolsOpen(false, { restoreFocus: false });
 
   try {
     const preparationPromise = (async (): Promise<PreparedBookOpening | null> => {
@@ -3548,10 +3602,10 @@ const importFiles = async (files: File[]) => {
 
   importInProgress = true;
   window.clearTimeout(importProgressTimer);
-  setLibraryPanel('import', { invoker: libraryImportButton });
+  setLibraryToolsOpen(true, { autofocus: false, focus: 'import' });
   setImportPresentation(true);
   setLibraryPhase('browsing');
-  libraryImportButton.disabled = true;
+  importChooseButton.disabled = true;
   setSegmentedProgress(importProgress, importPercent, 0);
   importErrors.replaceChildren();
   importErrors.hidden = true;
@@ -3635,11 +3689,11 @@ const importFiles = async (files: File[]) => {
   importErrors.hidden = failures.length === 0;
   importInProgress = false;
   setLibraryPhase('browsing');
-  libraryImportButton.disabled = false;
+  importChooseButton.disabled = false;
   if (!failures.length) {
     importProgressTimer = window.setTimeout(() => {
-      if (activeLibraryPanel === 'import') {
-        setLibraryPanel(null, { restoreFocus: false });
+      if (libraryToolsOpen && !importInProgress) {
+        setImportPresentation(false);
       }
     }, 1_200);
   }
@@ -3702,24 +3756,12 @@ libraryEmptyAction.addEventListener('click', () => {
     libraryCategoryButtons[0]?.focus({ preventScroll: true });
   }
 });
-libraryEmptyImport.addEventListener('click', () => libraryImportButton.click());
+libraryEmptyImport.addEventListener('click', () => {
+  setLibraryToolsOpen(true, { focus: 'import' });
+});
 
-libraryActionButtons.forEach((button) => {
-  button.addEventListener('click', () => {
-    const action = button.dataset.libraryAction;
-
-    if (
-      action === 'search'
-      || action === 'import'
-      || action === 'background'
-      || action === 'appearance'
-    ) {
-      setLibraryPanel(
-        activeLibraryPanel === action ? null : action,
-        { invoker: button },
-      );
-    }
-  });
+libraryToolsButton.addEventListener('click', () => {
+  setLibraryToolsOpen(!libraryToolsOpen);
 });
 librarySearch.addEventListener('input', renderLibrarySearch);
 librarySearch.addEventListener('keydown', (event) => {
@@ -3728,7 +3770,7 @@ librarySearch.addEventListener('keydown', (event) => {
 
     if (firstMatch) {
       event.preventDefault();
-      const trigger = getPhysicalBookButton(firstMatch.id) ?? librarySearchButton;
+      const trigger = getPhysicalBookButton(firstMatch.id) ?? libraryToolsButton;
 
       void openBookSummary(firstMatch, trigger);
     }
@@ -3899,7 +3941,7 @@ settingsOptions.addEventListener('input', (event) => {
   }
 
   const appearancePanelOpen = (
-    mode === 'library' && activeLibraryPanel === 'appearance'
+    mode === 'library' && libraryToolsOpen
   ) || (
     mode === 'reading' && activePanel === 'appearance'
   );
@@ -3940,13 +3982,13 @@ document.addEventListener('pointerdown', (event) => {
     setReaderPanel(null, { restoreFocus: false });
   }
   if (
-    activeLibraryPanel
+    libraryToolsOpen
     && !importInProgress
     && event.target instanceof Node
     && !libraryPanel.contains(event.target)
-    && !(event.target instanceof Element && event.target.closest('[data-library-action]'))
+    && !(event.target instanceof Element && event.target.closest('[data-library-tools-toggle]'))
   ) {
-    setLibraryPanel(null, { restoreFocus: false });
+    setLibraryToolsOpen(false, { restoreFocus: false });
   }
 });
 
@@ -3973,7 +4015,7 @@ const handleReaderCommand = (command: ReaderCommand) => {
     } else if (mode === 'reading') {
       void closeBook().then(() => {
         if (mode === 'library') {
-          setLibraryPanel('import', { invoker: libraryImportButton });
+          setLibraryToolsOpen(true, { focus: 'import' });
           importInput.click();
         }
       });
@@ -4011,10 +4053,7 @@ window.addEventListener('keydown', (event) => {
   if (event.metaKey && event.key === ',') {
     if (mode === 'library') {
       event.preventDefault();
-      setLibraryPanel(
-        activeLibraryPanel === 'appearance' ? null : 'appearance',
-        { invoker: libraryAppearanceButton },
-      );
+      setLibraryToolsOpen(!libraryToolsOpen, { focus: 'appearance' });
     } else if (mode === 'reading') {
       event.preventDefault();
       setReaderPanel(
@@ -4028,7 +4067,7 @@ window.addEventListener('keydown', (event) => {
   if (event.metaKey && (event.key === '+' || event.key === '=')) {
     if (mode === 'library') {
       event.preventDefault();
-      setLibraryPanel('appearance', { invoker: libraryAppearanceButton });
+      setLibraryToolsOpen(true, { focus: 'appearance' });
       changeFontSize(1);
     } else if (mode === 'reading') {
       event.preventDefault();
@@ -4041,7 +4080,7 @@ window.addEventListener('keydown', (event) => {
   if (event.metaKey && event.key === '-') {
     if (mode === 'library') {
       event.preventDefault();
-      setLibraryPanel('appearance', { invoker: libraryAppearanceButton });
+      setLibraryToolsOpen(true, { focus: 'appearance' });
       changeFontSize(-1);
     } else if (mode === 'reading') {
       event.preventDefault();
@@ -4065,14 +4104,14 @@ window.addEventListener('keydown', (event) => {
   if (event.metaKey && event.key.toLowerCase() === 'k') {
     event.preventDefault();
     if (mode === 'library' && !libraryOpenInProgress) {
-      setLibraryPanel('search', { invoker: librarySearchButton });
+      setLibraryToolsOpen(true, { focus: 'search' });
     }
     return;
   }
 
-  if (event.key === 'Escape' && activeLibraryPanel && !importInProgress) {
+  if (event.key === 'Escape' && libraryToolsOpen && !importInProgress) {
     event.preventDefault();
-    setLibraryPanel(null);
+    setLibraryToolsOpen(false);
     return;
   }
 
@@ -4129,7 +4168,7 @@ readingProgress = readProgress();
 readerPins = readPins();
 applyAppearance(appearance, false);
 setReaderPanel(null, { restoreFocus: false });
-setLibraryPanel(null, { restoreFocus: false });
+setLibraryToolsOpen(false, { restoreFocus: false });
 setMode('landing');
 stopThinkingOrb = createThinkingOrb(thinkingOrbCanvas, reducedMotion);
 renderLibrarySearch();
